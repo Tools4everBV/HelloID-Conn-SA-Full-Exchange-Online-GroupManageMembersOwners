@@ -7,7 +7,7 @@ $portalUrl = "https://CUSTOMER.helloid.com"
 $apiKey = "API_KEY"
 $apiSecret = "API_SECRET"
 $delegatedFormAccessGroupNames = @("Users") #Only unique names are supported. Groups must exist!
-$delegatedFormCategories = @("NTFS Management") #Only unique names are supported. Categories will be created if not exists
+$delegatedFormCategories = @("Group Management","Office 365","Exchange Online") #Only unique names are supported. Categories will be created if not exists
 $script:debugLogging = $false #Default value: $false. If $true, the HelloID resource GUIDs will be shown in the logging
 $script:duplicateForm = $false #Default value: $false. If $true, the HelloID resource names will be changed to import a duplicate Form
 $script:duplicateFormSuffix = "_tmp" #the suffix will be added to all HelloID resource names to generate a duplicate form with different resource names
@@ -28,7 +28,7 @@ $tmpName = @'
 ExchangeOnlineAdminUsername
 '@ 
 $tmpValue = @'
-sa_exch@enyoi.nl
+ramon@schoulens.onmicrosoft.com
 '@ 
 $globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "False"});
 
@@ -325,7 +325,7 @@ foreach ($item in $globalHelloIDVariables) {
 
 
 <# Begin: HelloID Data sources #>
-<# Begin: DataSource "Exchange-online-user-generate-table v2" #>
+<# Begin: DataSource "Exchange-online-user-generate-table" #>
 $tmpPsScript = @'
 # Set TLS to accept TLS, TLS 1.1 and TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
@@ -335,26 +335,45 @@ $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
 # Exchange parameters
-$exchangeOnlineConnectionUri = "https://outlook.office365.com/powershell-liveid/"
 $username = $ExchangeOnlineAdminUsername
 $password = $ExchangeOnlineAdminPassword
 
-# Connecto to Exchange
+# Connect to Exchange Online
 try{
-    Write-Verbose "Connecting to Exchange Online.."
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop 
-   
-    if($exchangeSession){
-        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking
-        Write-Information "Successfully connected to Office365"
-    }else{
-        throw "username or password is not correct"
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Import module
+    $moduleName = "ExchangeOnlineManagement"
+    $commands = @("Get-User")
+
+    # If module is imported say that and do nothing
+    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+        Write-Verbose "Module $ModuleName is already imported."
     }
+    else {
+        # If module is not imported, but available on disk then import
+        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+            $module = Import-Module $ModuleName -Cmdlet $commands
+            Write-Verbose "Imported module $ModuleName"
+        }
+        else {
+            # If the module is not imported, not available and not in the online gallery then abort
+            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+        }
+    }
+
+        
+    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
+    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+
 }catch{
-    throw "Could not connect to Exchange Online, error: $($_.Exception.Message)"
+    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
+    Write-Error "$InvocationInfoPositionMessage"
+    throw "Could not connect to Exchange Online, error: $_"
 }
+
 
 try {
     Write-Information "Searching for Exchange users.."
@@ -381,83 +400,9 @@ try {
     $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
     Write-Error ("Error searching for Exchange Online users. Error: $($_.Exception.Message)" + $errorDetailsMessage)
 } finally {
-    Write-Information -Message "Closing Exchange Online connection"
-    $exchangeSession | Remove-PSSession -ErrorAction Stop       
-    Write-Information -Message "Successfully closed Exchange Online connection"
-}
-'@ 
-$tmpModel = @'
-[{"key":"name","type":0},{"key":"UserPrincipalName","type":0},{"key":"id","type":0}]
-'@ 
-$tmpInput = @'
-[]
-'@ 
-$dataSourceGuid_1 = [PSCustomObject]@{} 
-$dataSourceGuid_1_Name = @'
-Exchange-online-user-generate-table v2
-'@ 
-Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_1_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_1) 
-<# End: DataSource "Exchange-online-user-generate-table v2" #>
-
-<# Begin: DataSource "Exchange-online-user-generate-table v2" #>
-$tmpPsScript = @'
-# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
-
-$VerbosePreference = "SilentlyContinue"
-$InformationPreference = "Continue"
-$WarningPreference = "Continue"
-
-# Exchange parameters
-$exchangeOnlineConnectionUri = "https://outlook.office365.com/powershell-liveid/"
-$username = $ExchangeOnlineAdminUsername
-$password = $ExchangeOnlineAdminPassword
-
-# Connecto to Exchange
-try{
-    Write-Verbose "Connecting to Exchange Online.."
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop 
-   
-    if($exchangeSession){
-        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking
-        Write-Information "Successfully connected to Office365"
-    }else{
-        throw "username or password is not correct"
-    }
-}catch{
-    throw "Could not connect to Exchange Online, error: $($_.Exception.Message)"
-}
-
-try {
-    Write-Information "Searching for Exchange users.."
-    
-    $exchangeOnlineUsers = Get-User -ResultSize Unlimited
-    $users = $exchangeOnlineUsers
-    $resultCount = $users.id.Count
-            
-    Write-Information "Result count: $resultCount"
-        
-    if($resultCount -gt 0){
-        foreach($user in $users){
-            $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
-                
-            $returnObject = @{
-                name=$displayValue;
-                UserPrincipalName="$($user.UserPrincipalName)";
-                id="$($user.id)";
-            }
-            Write-Output $returnObject
-        }
-    }
-} catch {
-    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online users. Error: $($_.Exception.Message)" + $errorDetailsMessage)
-} finally {
-    Write-Information -Message "Closing Exchange Online connection"
-    $exchangeSession | Remove-PSSession -ErrorAction Stop       
-    Write-Information -Message "Successfully closed Exchange Online connection"
+    Write-Verbose "Disconnecting from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+    Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
@@ -468,12 +413,12 @@ $tmpInput = @'
 '@ 
 $dataSourceGuid_3 = [PSCustomObject]@{} 
 $dataSourceGuid_3_Name = @'
-Exchange-online-user-generate-table v2
+Exchange-online-user-generate-table
 '@ 
 Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_3_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_3) 
-<# End: DataSource "Exchange-online-user-generate-table v2" #>
+<# End: DataSource "Exchange-online-user-generate-table" #>
 
-<# Begin: DataSource "Exchange-Online-group-generate-table-wildcard v2" #>
+<# Begin: DataSource "Exchange-online-user-generate-table" #>
 $tmpPsScript = @'
 # Set TLS to accept TLS, TLS 1.1 and TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
@@ -483,25 +428,136 @@ $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
 # Exchange parameters
-$exchangeOnlineConnectionUri = "https://outlook.office365.com/powershell-liveid/"
 $username = $ExchangeOnlineAdminUsername
 $password = $ExchangeOnlineAdminPassword
 
-# Connecto to Exchange
+# Connect to Exchange Online
 try{
-    Write-Verbose "Connecting to Exchange Online.."
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop 
-   
-    if($exchangeSession){
-        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking
-        Write-Information "Successfully connected to Office365"
-    }else{
-        throw "username or password is not correct"
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Import module
+    $moduleName = "ExchangeOnlineManagement"
+    $commands = @("Get-User")
+
+    # If module is imported say that and do nothing
+    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+        Write-Verbose "Module $ModuleName is already imported."
     }
+    else {
+        # If module is not imported, but available on disk then import
+        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+            $module = Import-Module $ModuleName -Cmdlet $commands
+            Write-Verbose "Imported module $ModuleName"
+        }
+        else {
+            # If the module is not imported, not available and not in the online gallery then abort
+            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+        }
+    }
+
+        
+    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
+    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+
 }catch{
-    throw "Could not connect to Exchange Online, error: $($_.Exception.Message)"
+    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
+    Write-Error "$InvocationInfoPositionMessage"
+    throw "Could not connect to Exchange Online, error: $_"
+}
+
+
+try {
+    Write-Information "Searching for Exchange users.."
+    
+    $exchangeOnlineUsers = Get-User -ResultSize Unlimited
+    $users = $exchangeOnlineUsers
+    $resultCount = $users.id.Count
+            
+    Write-Information "Result count: $resultCount"
+        
+    if($resultCount -gt 0){
+        foreach($user in $users){
+            $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
+                
+            $returnObject = @{
+                name=$displayValue;
+                UserPrincipalName="$($user.UserPrincipalName)";
+                id="$($user.id)";
+            }
+            Write-Output $returnObject
+        }
+    }
+} catch {
+    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
+    Write-Error ("Error searching for Exchange Online users. Error: $($_.Exception.Message)" + $errorDetailsMessage)
+} finally {
+    Write-Verbose "Disconnecting from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+    Write-Information "Successfully disconnected from Exchange Online"
+}
+'@ 
+$tmpModel = @'
+[{"key":"name","type":0},{"key":"UserPrincipalName","type":0},{"key":"id","type":0}]
+'@ 
+$tmpInput = @'
+[]
+'@ 
+$dataSourceGuid_1 = [PSCustomObject]@{} 
+$dataSourceGuid_1_Name = @'
+Exchange-online-user-generate-table
+'@ 
+Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_1_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_1) 
+<# End: DataSource "Exchange-online-user-generate-table" #>
+
+<# Begin: DataSource "Exchange-Online-group-generate-table-wildcard" #>
+$tmpPsScript = @'
+# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
+
+$VerbosePreference = "SilentlyContinue"
+$InformationPreference = "Continue"
+$WarningPreference = "Continue"
+
+# Exchange parameters
+$username = $ExchangeOnlineAdminUsername
+$password = $ExchangeOnlineAdminPassword
+
+# Connect to Exchange Online
+try{
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Import module
+    $moduleName = "ExchangeOnlineManagement"
+    $commands = @("Get-Group")
+
+    # If module is imported say that and do nothing
+    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+        Write-Verbose "Module $ModuleName is already imported."
+    }
+    else {
+        # If module is not imported, but available on disk then import
+        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+            $module = Import-Module $ModuleName -Cmdlet $commands
+            Write-Verbose "Imported module $ModuleName"
+        }
+        else {
+            # If the module is not imported, not available and not in the online gallery then abort
+            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+        }
+    }
+
+        
+    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
+    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+
+}catch{
+    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
+    Write-Error "$InvocationInfoPositionMessage"
+    throw "Could not connect to Exchange Online, error: $_"
 }
 
 try {
@@ -546,9 +602,9 @@ try {
     $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
     Write-Error ("Error searching for Exchange Online groups. Error: $($_.Exception.Message)" + $errorDetailsMessage)
 } finally {
-    Write-Information "Closing Exchange Online connection"
-    $exchangeSession | Remove-PSSession -ErrorAction Stop       
-    Write-Information "Successfully closed Exchange Online connection"
+    Write-Verbose "Disconnecting from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+    Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
@@ -559,12 +615,12 @@ $tmpInput = @'
 '@ 
 $dataSourceGuid_0 = [PSCustomObject]@{} 
 $dataSourceGuid_0_Name = @'
-Exchange-Online-group-generate-table-wildcard v2
+Exchange-Online-group-generate-table-wildcard
 '@ 
 Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_0_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_0) 
-<# End: DataSource "Exchange-Online-group-generate-table-wildcard v2" #>
+<# End: DataSource "Exchange-Online-group-generate-table-wildcard" #>
 
-<# Begin: DataSource "Exchange-Online-group-generate-table-owners v2" #>
+<# Begin: DataSource "Exchange-Online-group-generate-table-owners" #>
 $tmpPsScript = @'
 # Set TLS to accept TLS, TLS 1.1 and TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
@@ -574,25 +630,43 @@ $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
 # Exchange parameters
-$exchangeOnlineConnectionUri = "https://outlook.office365.com/powershell-liveid/"
 $username = $ExchangeOnlineAdminUsername
 $password = $ExchangeOnlineAdminPassword
 
-# Connecto to Exchange
+# Connect to Exchange Online
 try{
-    Write-Verbose "Connecting to Exchange Online.."
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop 
-   
-    if($exchangeSession){
-        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking
-        Write-Information "Successfully connected to Office365"
-    }else{
-        throw "username or password is not correct"
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Import module
+    $moduleName = "ExchangeOnlineManagement"
+    $commands = @("Get-DistributionGroup","Get-User")
+
+    # If module is imported say that and do nothing
+    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+        Write-Verbose "Module $ModuleName is already imported."
     }
+    else {
+        # If module is not imported, but available on disk then import
+        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+            $module = Import-Module $ModuleName -Cmdlet $commands
+            Write-Verbose "Imported module $ModuleName"
+        }
+        else {
+            # If the module is not imported, not available and not in the online gallery then abort
+            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+        }
+    }
+
+        
+    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
+    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+
 }catch{
-    throw "Could not connect to Exchange Online, error: $($_.Exception.Message)"
+    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
+    Write-Error "$InvocationInfoPositionMessage"
+    throw "Could not connect to Exchange Online, error: $_"
 }
 
 try {
@@ -627,9 +701,9 @@ try {
     $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
     Write-Error ("Error searching for Exchange Online group owners. Error: $($_.Exception.Message)" + $errorDetailsMessage)
 } finally {
-    Write-Verbose "Closing Exchange Online connection"
-    $exchangeSession | Remove-PSSession -ErrorAction Stop       
-    Write-Information "Successfully closed Exchange Online connection"
+    Write-Verbose "Disconnecting from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+    Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
@@ -640,10 +714,10 @@ $tmpInput = @'
 '@ 
 $dataSourceGuid_2 = [PSCustomObject]@{} 
 $dataSourceGuid_2_Name = @'
-Exchange-Online-group-generate-table-owners v2
+Exchange-Online-group-generate-table-owners
 '@ 
 Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_2_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_2) 
-<# End: DataSource "Exchange-Online-group-generate-table-owners v2" #>
+<# End: DataSource "Exchange-Online-group-generate-table-owners" #>
 
 <# Begin: DataSource "Exchange-Online-group-generate-table-members v2" #>
 $tmpPsScript = @'
@@ -655,25 +729,43 @@ $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
 # Exchange parameters
-$exchangeOnlineConnectionUri = "https://outlook.office365.com/powershell-liveid/"
 $username = $ExchangeOnlineAdminUsername
 $password = $ExchangeOnlineAdminPassword
 
-# Connecto to Exchange
+# Connect to Exchange Online
 try{
-    Write-Verbose "Connecting to Exchange Online.."
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop 
-   
-    if($exchangeSession){
-        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking
-        Write-Information "Successfully connected to Office365"
-    }else{
-        throw "username or password is not correct"
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Import module
+    $moduleName = "ExchangeOnlineManagement"
+    $commands = @("Get-DistributionGroupMember")
+
+    # If module is imported say that and do nothing
+    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+        Write-Verbose "Module $ModuleName is already imported."
     }
+    else {
+        # If module is not imported, but available on disk then import
+        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+            $module = Import-Module $ModuleName -Cmdlet $commands
+            Write-Verbose "Imported module $ModuleName"
+        }
+        else {
+            # If the module is not imported, not available and not in the online gallery then abort
+            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+        }
+    }
+
+        
+    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
+    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+
 }catch{
-    throw "Could not connect to Exchange Online, error: $($_.Exception.Message)"
+    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
+    Write-Error "$InvocationInfoPositionMessage"
+    throw "Could not connect to Exchange Online, error: $_"
 }
 
 try {
@@ -706,9 +798,9 @@ try {
     $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
     Write-Error ("Error searching for Exchange Online group members. Error: $($_.Exception.Message)" + $errorDetailsMessage)
 } finally {
-    Write-Verbose "Closing Exchange Online connection"
-    $exchangeSession | Remove-PSSession -ErrorAction Stop       
-    Write-Information "Successfully closed Exchange Online connection"
+    Write-Verbose "Disconnecting from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+    Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
@@ -786,7 +878,7 @@ $delegatedFormName = @'
 Exchange Online - Group - Manage memberships
 '@
 $tmpTask = @'
-{"name":"Exchange Online - Group - Manage memberships","script":"# Set TLS to accept TLS, TLS 1.1 and TLS 1.2\r\n[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12\r\n\r\n$VerbosePreference = \"SilentlyContinue\"\r\n$InformationPreference = \"Continue\"\r\n$WarningPreference = \"Continue\"\r\n\r\n# Exchange parameters\r\n$exchangeOnlineConnectionUri = \"https://outlook.office365.com/powershell-liveid/\"\r\n$username = $ExchangeOnlineAdminUsername\r\n$password = $ExchangeOnlineAdminPassword\r\n\r\n# Form input\r\n$groupId = $form.gridGroups.id\r\n$Owners = $form.owners.right\r\n$usersToAdd = $form.members.leftToRight\r\n$usersToRemove = $form.members.rightToLeft\r\n\r\n# Connecto to Exchange\r\ntry{\r\n    Write-Verbose \"Connecting to Exchange Online..\"\r\n    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force\r\n    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)\r\n    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop \r\n   \r\n    if($exchangeSession){\r\n        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking\r\n        Write-Information \"Successfully connected to Office365\"\r\n    }else{\r\n        throw \"username or password is not correct\"\r\n    }\r\n}catch{\r\n    throw \"Could not connect to Exchange Online, error: $($_.Exception.Message)\"\r\n}\r\n\r\ntry{\r\n    try {\r\n        Write-Verbose \"Searching for Exchange Online group ID=$groupId\"\r\n        \r\n        $exchangeOnlineGroup = Get-Group -Identity $groupId -ErrorAction Stop\r\n        Write-Information \"Succesfully found Exchange Online group [$groupId]\"\r\n    } catch {\r\n        Write-Error \"Could not find Exchange Online group [$groupId]. Error: $($_.Exception.Message)\"\r\n    }\r\n\r\n    # Add members\r\n    if($usersToAdd -ne $null){\r\n        try {\r\n            foreach($user in $usersToAdd){\r\n                $addMember = Add-DistributionGroupMember -Identity $exchangeOnlineGroup.Identity -Member $user.Id -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop\r\n            }\r\n\r\n            Write-Information \"Succesfully added Exchange Online users [$($usersToAdd | ConvertTo-Json)] to Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        } catch {\r\n            if($_ -like \"*already a member of the group*\"){\r\n                Write-Information \"The recipient $($user.Name) is already a member of the group $($exchangeOnlineGroup.Identity)\";\r\n            }elseif($_ -like \"*object '$($exchangeOnlineGroup.id)' couldn't be found*\"){\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }elseif($_ -like \"*Couldn't find object \"\"$($user.Id)\"\"*\"){\r\n                Write-Warning \"User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }else{\r\n                Write-Error \"Could not add Exchange Online users [$($usersToAdd | ConvertTo-Json)] to Exchange Online group [$($exchangeOnlineGroup.displayName). Error: $($_.Exception.Message)\"\r\n            }\r\n        }\r\n    }\r\n\r\n    # Remove members\r\n    if($usersToRemove -ne $null){\r\n        try {\r\n            foreach($user in $usersToRemove){\r\n                $removeMember = Remove-DistributionGroupMember -Identity $exchangeOnlineGroup.Identity -Member $user.Id -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop\r\n            }\r\n\r\n            Write-Information \"Succesfully removed Exchange Online users [$($usersToRemove | ConvertTo-Json)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        } catch {\r\n            if($_ -like \"*isn't a member of the group*\"){\r\n                Write-Information \"The recipient  $($user.Name) isn't a member of the group $($exchangeOnlineGroup.Identity))\";\r\n            }elseif($_ -like \"*object '$($exchangeOnlineGroup.id)' couldn't be found*\"){\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }elseif($_ -like \"*Couldn't find object \"\"$($user.Id)\"\"*\"){\r\n                Write-Warning \"User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }else{\r\n                Write-Error \"Could not remove Exchange Online users [$($usersToRemove | ConvertTo-Json)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $($_.Exception.Message)\"\r\n            }\r\n        }\r\n    }\r\n\r\n    # Update owners\r\n    if($OwnersToUpdate -ne $null){\r\n        try {\r\n            $groupParams = @{\r\n                Identity            =   $exchangeOnlineGroup.Identity\r\n                ManagedBy           =  $Owners.userPrincipalName\r\n            }\r\n\r\n            Write-Information \"Succesfully updated owners [$($Owners | ConvertTo-Json)] for Exchange Online group [$exchangeOnlineGroup.Identity]\"\r\n        } catch {\r\n            Write-Error \"Could not update owners [$($Owners | ConvertTo-Json)] for Exchange Online group [$exchangeOnlineGroup.Identity]. Error: $($_.Exception.Message)\"\r\n        }\r\n    }    \r\n} finally {\r\n    Write-Verbose \"Closing Exchange Online connection\"\r\n    $exchangeSession | Remove-PSSession -ErrorAction Stop       \r\n    Write-Information \"Successfully closed Exchange Online connection\"\r\n}","runInCloud":false}
+{"name":"Exchange Online - Group - Manage memberships","script":"# Set TLS to accept TLS, TLS 1.1 and TLS 1.2\r\n[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12\r\n\r\n$VerbosePreference = \"SilentlyContinue\"\r\n$InformationPreference = \"Continue\"\r\n$WarningPreference = \"Continue\"\r\n\r\n# Exchange parameters\r\n$username = $ExchangeOnlineAdminUsername\r\n$password = $ExchangeOnlineAdminPassword\r\n\r\n# Form input\r\n$groupId = $form.gridGroups.id\r\n$Owners = $form.owners.right\r\n$usersToAdd = $form.members.leftToRight\r\n$usersToRemove = $form.members.rightToLeft\r\n\r\n# Connect to Exchange Online\r\ntry{\r\n    Write-Verbose \"Connecting to Exchange Online\"\r\n\r\n    # Import module\r\n    $moduleName = \"ExchangeOnlineManagement\"\r\n    $commands = @(\"Get-Group\",\"Add-DistributionGroupMember\",\"Remove-DistributionGroupMember\")\r\n\r\n    # If module is imported say that and do nothing\r\n    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {\r\n        Write-Verbose \"Module $ModuleName is already imported.\"\r\n    }\r\n    else {\r\n        # If module is not imported, but available on disk then import\r\n        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {\r\n            $module = Import-Module $ModuleName -Cmdlet $commands\r\n            Write-Verbose \"Imported module $ModuleName\"\r\n        }\r\n        else {\r\n            # If the module is not imported, not available and not in the online gallery then abort\r\n            throw \"Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force\"\r\n        }\r\n    }\r\n\r\n        \r\n    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).\r\n    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force\r\n    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)\r\n    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop\r\n\r\n}catch{\r\n    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage\r\n    Write-Error \"$InvocationInfoPositionMessage\"\r\n    throw \"Could not connect to Exchange Online, error: $_\"\r\n}\r\n\r\ntry{\r\n    try {\r\n        Write-Verbose \"Searching for Exchange Online group ID=$groupId\"\r\n        \r\n        $exchangeOnlineGroup = Get-Group -Identity $groupId -ErrorAction Stop\r\n        Write-Information \"Succesfully found Exchange Online group [$groupId]\"\r\n    } catch {\r\n        Write-Error \"Could not find Exchange Online group [$groupId]. Error: $($_.Exception.Message)\"\r\n    }\r\n\r\n    # Add members\r\n    if($usersToAdd -ne $null){\r\n        try {\r\n            foreach($user in $usersToAdd){\r\n                $addMember = Add-DistributionGroupMember -Identity $exchangeOnlineGroup.Identity -Member $user.Id -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop\r\n            }\r\n\r\n            Write-Information \"Succesfully added Exchange Online users [$($usersToAdd | ConvertTo-Json)] to Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        } catch {\r\n            if($_ -like \"*already a member of the group*\"){\r\n                Write-Information \"The recipient $($user.Name) is already a member of the group $($exchangeOnlineGroup.Identity)\";\r\n            }elseif($_ -like \"*object '$($exchangeOnlineGroup.id)' couldn't be found*\"){\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }elseif($_ -like \"*Couldn't find object \"\"$($user.Id)\"\"*\"){\r\n                Write-Warning \"User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }else{\r\n                Write-Error \"Could not add Exchange Online users [$($usersToAdd | ConvertTo-Json)] to Exchange Online group [$($exchangeOnlineGroup.displayName). Error: $($_.Exception.Message)\"\r\n            }\r\n        }\r\n    }\r\n\r\n    # Remove members\r\n    if($usersToRemove -ne $null){\r\n        try {\r\n            foreach($user in $usersToRemove){\r\n                $removeMember = Remove-DistributionGroupMember -Identity $exchangeOnlineGroup.Identity -Member $user.Id -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop\r\n            }\r\n\r\n            Write-Information \"Succesfully removed Exchange Online users [$($usersToRemove | ConvertTo-Json)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        } catch {\r\n            if($_ -like \"*isn't a member of the group*\"){\r\n                Write-Information \"The recipient  $($user.Name) isn't a member of the group $($exchangeOnlineGroup.Identity))\";\r\n            }elseif($_ -like \"*object '$($exchangeOnlineGroup.id)' couldn't be found*\"){\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }elseif($_ -like \"*Couldn't find object \"\"$($user.Id)\"\"*\"){\r\n                Write-Warning \"User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }else{\r\n                Write-Error \"Could not remove Exchange Online users [$($usersToRemove | ConvertTo-Json)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $($_.Exception.Message)\"\r\n            }\r\n        }\r\n    }\r\n\r\n    # Update owners\r\n    if($OwnersToUpdate -ne $null){\r\n        try {\r\n            $groupParams = @{\r\n                Identity            =  $exchangeOnlineGroup.Identity\r\n                ManagedBy           =  $Owners.userPrincipalName\r\n            }\r\n\r\n            Write-Information \"Succesfully updated owners [$($Owners | ConvertTo-Json)] for Exchange Online group [$exchangeOnlineGroup.Identity]\"\r\n        } catch {\r\n            Write-Error \"Could not update owners [$($Owners | ConvertTo-Json)] for Exchange Online group [$exchangeOnlineGroup.Identity]. Error: $($_.Exception.Message)\"\r\n        }\r\n    }    \r\n} finally {\r\n    Write-Verbose \"Disconnecting from Exchange Online\"\r\n    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop\r\n    Write-Information \"Successfully disconnected from Exchange Online\"\r\n}","runInCloud":false}
 '@ 
 
 Invoke-HelloIDDelegatedForm -DelegatedFormName $delegatedFormName -DynamicFormGuid $dynamicFormGuid -AccessGroups $delegatedFormAccessGroupGuids -Categories $delegatedFormCategoryGuids -UseFaIcon "True" -FaIcon "fa fa-users" -task $tmpTask -returnObject ([Ref]$delegatedFormRef) 

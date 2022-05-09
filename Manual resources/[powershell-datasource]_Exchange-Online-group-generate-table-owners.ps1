@@ -15,7 +15,7 @@ try{
 
     # Import module
     $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-DistributionGroupMember")
+    $commands = @("Get-DistributionGroup","Get-User")
 
     # If module is imported say that and do nothing
     if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
@@ -51,10 +51,12 @@ try {
     if([String]::IsNullOrEmpty($Identity) -eq $true){
         Write-Error "No Group id provided"
     }else{ 
-        Write-Information "Searching for Exchange Online group members.."
+        Write-Information "Searching for Exchange Online group owners.."
         
-        $exchangeOnlineUsers = Get-DistributionGroupMember -Identity $Identity
-        $users = $exchangeOnlineUsers
+        $exchangeOnlineUsers = (Get-DistributionGroup -Identity $Identity).managedBy
+        $users = foreach($exchangeOnlineUser in $exchangeOnlineUsers){
+            Get-User $exchangeOnlineUser
+        }
         $resultCount = $users.id.Count
         Write-Information  "Result count: $resultCount"
          
@@ -73,7 +75,7 @@ try {
     }
 } catch {
     $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online group members. Error: $($_.Exception.Message)" + $errorDetailsMessage)
+    Write-Error ("Error searching for Exchange Online group owners. Error: $($_.Exception.Message)" + $errorDetailsMessage)
 } finally {
     Write-Verbose "Disconnecting from Exchange Online"
     $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop

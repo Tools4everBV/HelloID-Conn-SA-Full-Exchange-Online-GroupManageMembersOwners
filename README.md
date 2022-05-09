@@ -1,6 +1,6 @@
 <!-- Requirements -->
 ## Requirements
-This HelloID Service Automation Delegated Form uses [Remote PowerShell to connect to Exchange Online](https://docs.microsoft.com/en-us/powershell/exchange/connect-to-exchange-servers-using-remote-powershell?view=exchange-ps)
+This HelloID Service Automation Delegated Form uses the [Exchange Online PowerShell V2 module](https://docs.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps)
 
 <!-- Description -->
 ## Description
@@ -13,23 +13,26 @@ This HelloID Service Automation Delegated Form provides Exchange Online (Office3
 ## Versioning
 | Version | Description | Date |
 | - | - | - |
+| 1.1.0   | Updated to use the Exchange v2 module | 2022/05/09  |
 | 1.0.0   | Initial release | 2022/03/28  |
 
 <!-- TABLE OF CONTENTS -->
 ## Table of Contents
 - [Requirements](#requirements)
 - [Description](#description)
+- [Versioning](#versioning)
 - [Table of Contents](#table-of-contents)
 - [All-in-one PowerShell setup script](#all-in-one-powershell-setup-script)
   - [Getting started](#getting-started)
 - [Post-setup configuration](#post-setup-configuration)
 - [Manual resources](#manual-resources)
-  - [Powershell data source 'Exchange-Online-group-generate-table-wildcard v2'](#powershell-data-source-Exchange-Online-group-generate-table-wildcard-v2)
-  - [Powershell data source 'Exchange-online-user-generate-table v2'](#powershell-data-source-Exchange-online-user-generate-table-v2)
-  - [Powershell data source 'Exchange-Online-group-generate-table-owners v2'](#powershell-data-source-Exchange-Online-group-generate-table-owners-v2)
-  - [Powershell data source 'Exchange-Online-group-generate-table-members v2'](#powershell-data-source-Exchange-Online-group-generate-table-members-v2)
-  - [Delegated form task 'Exchange Online - Group - Manage memberships'](#Delegated-form-task-Exchange-Online-Group-Manage-memberships)
+  - [Powershell data source 'Exchange-Online-group-generate-table-wildcard'](#powershell-data-source-exchange-online-group-generate-table-wildcard)
+  - [Powershell data source 'Exchange-online-user-generate-table'](#powershell-data-source-exchange-online-user-generate-table)
+  - [Powershell data source 'Exchange-Online-group-generate-table-owners'](#powershell-data-source-exchange-online-group-generate-table-owners)
+  - [Powershell data source 'Exchange-Online-group-generate-table-members'](#powershell-data-source-exchange-online-group-generate-table-members)
+  - [Delegated form task 'Exchange Online - Group - Manage memberships'](#delegated-form-task-exchange-online---group---manage-memberships)
 - [Getting help](#getting-help)
+- [Getting help](#getting-help-1)
 - [HelloID Docs](#helloid-docs)
 
 
@@ -56,16 +59,16 @@ After the all-in-one PowerShell script has run and created all the required reso
 ## Manual resources
 This Delegated Form uses the following resources in order to run
 
-### Powershell data source 'Exchange-Online-group-generate-table-wildcard v2'
+### Powershell data source 'Exchange-Online-group-generate-table-wildcard'
 This Powershell data source gathers the available groups (that match the provided wildcard searchstring).
 
-### Powershell data source 'Exchange-online-user-generate-table v2'
+### Powershell data source 'Exchange-online-user-generate-table'
 This Powershell data source queries and returns all available users.
 
-### Powershell data source 'Exchange-Online-group-generate-table-owners v2'
+### Powershell data source 'Exchange-Online-group-generate-table-owners'
 This Powershell data source queries and returns the owners of the group.
 
-### Powershell data source 'Exchange-Online-group-generate-table-members v2'
+### Powershell data source 'Exchange-Online-group-generate-table-members'
 This Powershell data source queries and returns the members of the group.
 
 ### Delegated form task 'Exchange Online - Group - Manage memberships'

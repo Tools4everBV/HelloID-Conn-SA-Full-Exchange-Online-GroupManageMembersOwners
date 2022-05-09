@@ -15,7 +15,7 @@ try{
 
     # Import module
     $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-DistributionGroupMember")
+    $commands = @("Get-Group")
 
     # If module is imported say that and do nothing
     if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
@@ -46,26 +46,38 @@ try{
 }
 
 try {
-    $Identity = $datasource.selectedGroup.id
-
-    if([String]::IsNullOrEmpty($Identity) -eq $true){
-        Write-Error "No Group id provided"
+    $searchValue = $datasource.searchValue
+    $searchQuery = "*$searchValue*"
+     
+    if([String]::IsNullOrEmpty($searchValue) -eq $true){
+        # Do nothing
     }else{ 
-        Write-Information "Searching for Exchange Online group members.."
+        Write-Information "Searching for Exchange Online groups.."
         
-        $exchangeOnlineUsers = Get-DistributionGroupMember -Identity $Identity
-        $users = $exchangeOnlineUsers
-        $resultCount = $users.id.Count
-        Write-Information  "Result count: $resultCount"
-         
+        $exchangeOnlineGroups = Get-Group -Identity *
+
+        Write-Information -Message "SearchQuery: $searchQuery"
+        Write-Information -Message "Searching for: $searchQuery"
+        
+        # Filter for specicic group by Display name
+        $exchangeOnlineGroups = foreach($exchangeOnlineGroup in $exchangeOnlineGroups){
+            if($exchangeOnlineGroup.displayName -like $searchQuery){
+                $exchangeOnlineGroup
+            }
+        }
+
+        $groups = $exchangeOnlineGroups
+        $resultCount = $groups.id.Count
+     
+        Write-Information -Message "Result count: $resultCount"
+     
         if($resultCount -gt 0){
-            foreach($user in $users){
-                $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
-                  
+            foreach($group in $groups){
                 $returnObject = @{
-                    windowsLiveID="$($user.WindowsLiveID)";
-                    name=$displayValue;
-                    id="$($user.id)";
+                    name="$($group.displayName)";
+                    id="$($group.id)";
+                    description="$($group.description)";
+                    groupType ="$($group.GroupType)"
                 }
                 Write-Output $returnObject
             }
@@ -73,7 +85,7 @@ try {
     }
 } catch {
     $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online group members. Error: $($_.Exception.Message)" + $errorDetailsMessage)
+    Write-Error ("Error searching for Exchange Online groups. Error: $($_.Exception.Message)" + $errorDetailsMessage)
 } finally {
     Write-Verbose "Disconnecting from Exchange Online"
     $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop

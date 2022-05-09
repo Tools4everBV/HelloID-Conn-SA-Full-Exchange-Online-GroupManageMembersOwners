@@ -15,7 +15,7 @@ try{
 
     # Import module
     $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-DistributionGroupMember")
+    $commands = @("Get-User")
 
     # If module is imported say that and do nothing
     if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
@@ -45,35 +45,31 @@ try{
     throw "Could not connect to Exchange Online, error: $_"
 }
 
-try {
-    $Identity = $datasource.selectedGroup.id
 
-    if([String]::IsNullOrEmpty($Identity) -eq $true){
-        Write-Error "No Group id provided"
-    }else{ 
-        Write-Information "Searching for Exchange Online group members.."
+try {
+    Write-Information "Searching for Exchange users.."
+    
+    $exchangeOnlineUsers = Get-User -ResultSize Unlimited
+    $users = $exchangeOnlineUsers
+    $resultCount = $users.id.Count
+            
+    Write-Information "Result count: $resultCount"
         
-        $exchangeOnlineUsers = Get-DistributionGroupMember -Identity $Identity
-        $users = $exchangeOnlineUsers
-        $resultCount = $users.id.Count
-        Write-Information  "Result count: $resultCount"
-         
-        if($resultCount -gt 0){
-            foreach($user in $users){
-                $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
-                  
-                $returnObject = @{
-                    windowsLiveID="$($user.WindowsLiveID)";
-                    name=$displayValue;
-                    id="$($user.id)";
-                }
-                Write-Output $returnObject
+    if($resultCount -gt 0){
+        foreach($user in $users){
+            $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
+                
+            $returnObject = @{
+                name=$displayValue;
+                UserPrincipalName="$($user.UserPrincipalName)";
+                id="$($user.id)";
             }
+            Write-Output $returnObject
         }
     }
 } catch {
     $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online group members. Error: $($_.Exception.Message)" + $errorDetailsMessage)
+    Write-Error ("Error searching for Exchange Online users. Error: $($_.Exception.Message)" + $errorDetailsMessage)
 } finally {
     Write-Verbose "Disconnecting from Exchange Online"
     $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop

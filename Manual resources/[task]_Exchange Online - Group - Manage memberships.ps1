@@ -6,7 +6,6 @@ $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
 # Exchange parameters
-$exchangeOnlineConnectionUri = "https://outlook.office365.com/powershell-liveid/"
 $username = $ExchangeOnlineAdminUsername
 $password = $ExchangeOnlineAdminPassword
 
@@ -16,21 +15,40 @@ $Owners = $form.owners.right
 $usersToAdd = $form.members.leftToRight
 $usersToRemove = $form.members.rightToLeft
 
-# Connecto to Exchange
+# Connect to Exchange Online
 try{
-    Write-Verbose "Connecting to Exchange Online.."
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop 
-   
-    if($exchangeSession){
-        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking
-        Write-Information "Successfully connected to Office365"
-    }else{
-        throw "username or password is not correct"
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Import module
+    $moduleName = "ExchangeOnlineManagement"
+    $commands = @("Get-Group","Add-DistributionGroupMember","Remove-DistributionGroupMember")
+
+    # If module is imported say that and do nothing
+    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+        Write-Verbose "Module $ModuleName is already imported."
     }
+    else {
+        # If module is not imported, but available on disk then import
+        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+            $module = Import-Module $ModuleName -Cmdlet $commands
+            Write-Verbose "Imported module $ModuleName"
+        }
+        else {
+            # If the module is not imported, not available and not in the online gallery then abort
+            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+        }
+    }
+
+        
+    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
+    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+
 }catch{
-    throw "Could not connect to Exchange Online, error: $($_.Exception.Message)"
+    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
+    Write-Error "$InvocationInfoPositionMessage"
+    throw "Could not connect to Exchange Online, error: $_"
 }
 
 try{
@@ -89,7 +107,7 @@ try{
     if($OwnersToUpdate -ne $null){
         try {
             $groupParams = @{
-                Identity            =   $exchangeOnlineGroup.Identity
+                Identity            =  $exchangeOnlineGroup.Identity
                 ManagedBy           =  $Owners.userPrincipalName
             }
 
@@ -99,7 +117,7 @@ try{
         }
     }    
 } finally {
-    Write-Verbose "Closing Exchange Online connection"
-    $exchangeSession | Remove-PSSession -ErrorAction Stop       
-    Write-Information "Successfully closed Exchange Online connection"
+    Write-Verbose "Disconnecting from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+    Write-Information "Successfully disconnected from Exchange Online"
 }
