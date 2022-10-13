@@ -6,8 +6,8 @@
 $portalUrl = "https://CUSTOMER.helloid.com"
 $apiKey = "API_KEY"
 $apiSecret = "API_SECRET"
-$delegatedFormAccessGroupNames = @("Users") #Only unique names are supported. Groups must exist!
-$delegatedFormCategories = @("Group Management","Office 365","Exchange Online") #Only unique names are supported. Categories will be created if not exists
+$delegatedFormAccessGroupNames = @("") #Only unique names are supported. Groups must exist!
+$delegatedFormCategories = @("") #Only unique names are supported. Categories will be created if not exists
 $script:debugLogging = $false #Default value: $false. If $true, the HelloID resource GUIDs will be shown in the logging
 $script:duplicateForm = $false #Default value: $false. If $true, the HelloID resource names will be changed to import a duplicate Form
 $script:duplicateFormSuffix = "_tmp" #the suffix will be added to all HelloID resource names to generate a duplicate form with different resource names
@@ -16,20 +16,25 @@ $script:duplicateFormSuffix = "_tmp" #the suffix will be added to all HelloID re
 #NOTE: You can also update the HelloID Global variable values afterwards in the HelloID Admin Portal: https://<CUSTOMER>.helloid.com/admin/variablelibrary
 $globalHelloIDVariables = [System.Collections.Generic.List[object]]@();
 
-#Global variable #1 >> ExchangeOnlineAdminPassword
+#Global variable #1 >> AADExchangeAppID
 $tmpName = @'
-ExchangeOnlineAdminPassword
+AADExchangeAppID
 '@ 
-$tmpValue = "" 
-$globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "True"});
+$tmpValue = ""
+$globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "False"});
 
-#Global variable #2 >> ExchangeOnlineAdminUsername
+#Global variable #2 >> AADExchangeOrganization
 $tmpName = @'
-ExchangeOnlineAdminUsername
+AADExchangeOrganization
 '@ 
-$tmpValue = @'
-ramon@schoulens.onmicrosoft.com
+$tmpValue = ""
+$globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "False"});
+
+#Global variable #3 >> AADExchangeCertificateThumbprint
+$tmpName = @'
+AADExchangeCertificateThumbprint
 '@ 
+$tmpValue = ""
 $globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "False"});
 
 
@@ -261,7 +266,7 @@ function Invoke-HelloIDDelegatedForm {
     param(
         [parameter(Mandatory)][String]$DelegatedFormName,
         [parameter(Mandatory)][String]$DynamicFormGuid,
-        [parameter()][String][AllowEmptyString()]$AccessGroups,
+        [parameter()][Array][AllowEmptyString()]$AccessGroups,
         [parameter()][String][AllowEmptyString()]$Categories,
         [parameter(Mandatory)][String]$UseFaIcon,
         [parameter()][String][AllowEmptyString()]$FaIcon,
@@ -285,11 +290,15 @@ function Invoke-HelloIDDelegatedForm {
                 name            = $DelegatedFormName;
                 dynamicFormGUID = $DynamicFormGuid;
                 isEnabled       = "True";
-                accessGroups    = (ConvertFrom-Json-WithEmptyArray($AccessGroups));
                 useFaIcon       = $UseFaIcon;
                 faIcon          = $FaIcon;
                 task            = ConvertFrom-Json -inputObject $task;
-            }    
+            }
+            if(-not[String]::IsNullOrEmpty($AccessGroups)) { 
+                $body += @{
+                    accessGroups    = (ConvertFrom-Json-WithEmptyArray($AccessGroups));
+                }
+            }
             $body = ConvertTo-Json -InputObject $body -Depth 100
     
             $uri = ($script:PortalBaseUrl +"api/v1/delegatedforms")
@@ -325,7 +334,7 @@ foreach ($item in $globalHelloIDVariables) {
 
 
 <# Begin: HelloID Data sources #>
-<# Begin: DataSource "Exchange-online-user-generate-table" #>
+<# Begin: DataSource "Exchange-online-user-generate-table v2" #>
 $tmpPsScript = @'
 # Set TLS to accept TLS, TLS 1.1 and TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
@@ -334,91 +343,169 @@ $VerbosePreference = "SilentlyContinue"
 $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
-# Exchange parameters
-$username = $ExchangeOnlineAdminUsername
-$password = $ExchangeOnlineAdminPassword
+# Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
+# Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
+$AADOrganization = $AADExchangeOrganization
+$AADAppID = $AADExchangeAppID
+$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
 
-# Connect to Exchange Online
-try{
-    Write-Verbose "Connecting to Exchange Online"
+# PowerShell commands to import
+$commands = @(
+    "Get-User" # Always required
+)
 
-    # Import module
-    $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-User")
+#region functions
+function Resolve-HTTPError {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ''
+        }
+        if ($ErrorObject.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message
+        }
+        elseif ($ErrorObject.Exception.GetType().FullName -eq 'System.Net.WebException') {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
+        }
+        Write-Output $httpErrorObj
+    }
+}
+#endregion functions
 
-    # If module is imported say that and do nothing
-    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-        Write-Verbose "Module $ModuleName is already imported."
+# Import module
+$moduleName = "ExchangeOnlineManagement"
+
+# If module is imported say that and do nothing
+if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+    Write-Verbose "Module $ModuleName is already imported."
+}
+else {
+    # If module is not imported, but available on disk then import
+    if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+        $module = Import-Module $ModuleName -Cmdlet $commands
+        Write-Verbose "Imported module $ModuleName"
     }
     else {
-        # If module is not imported, but available on disk then import
-        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-            $module = Import-Module $ModuleName -Cmdlet $commands
-            Write-Verbose "Imported module $ModuleName"
-        }
-        else {
-            # If the module is not imported, not available and not in the online gallery then abort
-            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-        }
+        # If the module is not imported, not available and not in the online gallery then abort
+        throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
     }
-
-        
-    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
-    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
-
-}catch{
-    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
-    Write-Error "$InvocationInfoPositionMessage"
-    throw "Could not connect to Exchange Online, error: $_"
 }
 
+# Connect to Exchange
+try {
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
+    $exchangeSessionParams = @{
+        Organization          = $AADOrganization
+        AppID                 = $AADAppID
+        CertificateThumbPrint = $AADCertificateThumbprint
+        CommandName           = $commands
+        ShowBanner            = $false
+        ShowProgress          = $false
+        TrackPerformance      = $false
+        ErrorAction           = 'Stop'
+    }
+
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+    
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $auditErrorMessage"
+}
 
 try {
-    Write-Information "Searching for Exchange users.."
+    Write-Verbose "Querying Exchange Online users"
     
     $exchangeOnlineUsers = Get-User -ResultSize Unlimited
     $users = $exchangeOnlineUsers
     $resultCount = $users.id.Count
-            
-    Write-Information "Result count: $resultCount"
+
+    Write-Information "Successfully queried Exchange Online users. Result count: $resultCount"
         
-    if($resultCount -gt 0){
-        foreach($user in $users){
+    if ($resultCount -gt 0) {
+        foreach ($user in $users) {
             $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
                 
             $returnObject = @{
-                name=$displayValue;
-                UserPrincipalName="$($user.UserPrincipalName)";
-                id="$($user.id)";
+                Name              = $displayValue;
+                UserPrincipalName = "$($user.UserPrincipalName)";
+                Id                = "$($user.id)";
             }
             Write-Output $returnObject
         }
     }
-} catch {
-    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online users. Error: $($_.Exception.Message)" + $errorDetailsMessage)
-} finally {
-    Write-Verbose "Disconnecting from Exchange Online"
-    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error searching for Exchange Online users. Error Message: $auditErrorMessage"
+}
+finally {
+    Write-Verbose "Disconnection from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop    
     Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
-[{"key":"name","type":0},{"key":"UserPrincipalName","type":0},{"key":"id","type":0}]
+[{"key":"Name","type":0},{"key":"UserPrincipalName","type":0},{"key":"Id","type":0}]
 '@ 
 $tmpInput = @'
 []
 '@ 
 $dataSourceGuid_3 = [PSCustomObject]@{} 
 $dataSourceGuid_3_Name = @'
-Exchange-online-user-generate-table
+Exchange-online-user-generate-table v2
 '@ 
 Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_3_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_3) 
-<# End: DataSource "Exchange-online-user-generate-table" #>
+<# End: DataSource "Exchange-online-user-generate-table v2" #>
 
-<# Begin: DataSource "Exchange-online-user-generate-table" #>
+<# Begin: DataSource "Exchange-online-user-generate-table v2" #>
 $tmpPsScript = @'
 # Set TLS to accept TLS, TLS 1.1 and TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
@@ -427,91 +514,169 @@ $VerbosePreference = "SilentlyContinue"
 $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
-# Exchange parameters
-$username = $ExchangeOnlineAdminUsername
-$password = $ExchangeOnlineAdminPassword
+# Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
+# Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
+$AADOrganization = $AADExchangeOrganization
+$AADAppID = $AADExchangeAppID
+$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
 
-# Connect to Exchange Online
-try{
-    Write-Verbose "Connecting to Exchange Online"
+# PowerShell commands to import
+$commands = @(
+    "Get-User" # Always required
+)
 
-    # Import module
-    $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-User")
+#region functions
+function Resolve-HTTPError {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ''
+        }
+        if ($ErrorObject.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message
+        }
+        elseif ($ErrorObject.Exception.GetType().FullName -eq 'System.Net.WebException') {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
+        }
+        Write-Output $httpErrorObj
+    }
+}
+#endregion functions
 
-    # If module is imported say that and do nothing
-    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-        Write-Verbose "Module $ModuleName is already imported."
+# Import module
+$moduleName = "ExchangeOnlineManagement"
+
+# If module is imported say that and do nothing
+if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+    Write-Verbose "Module $ModuleName is already imported."
+}
+else {
+    # If module is not imported, but available on disk then import
+    if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+        $module = Import-Module $ModuleName -Cmdlet $commands
+        Write-Verbose "Imported module $ModuleName"
     }
     else {
-        # If module is not imported, but available on disk then import
-        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-            $module = Import-Module $ModuleName -Cmdlet $commands
-            Write-Verbose "Imported module $ModuleName"
-        }
-        else {
-            # If the module is not imported, not available and not in the online gallery then abort
-            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-        }
+        # If the module is not imported, not available and not in the online gallery then abort
+        throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
     }
-
-        
-    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
-    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
-
-}catch{
-    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
-    Write-Error "$InvocationInfoPositionMessage"
-    throw "Could not connect to Exchange Online, error: $_"
 }
 
+# Connect to Exchange
+try {
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
+    $exchangeSessionParams = @{
+        Organization          = $AADOrganization
+        AppID                 = $AADAppID
+        CertificateThumbPrint = $AADCertificateThumbprint
+        CommandName           = $commands
+        ShowBanner            = $false
+        ShowProgress          = $false
+        TrackPerformance      = $false
+        ErrorAction           = 'Stop'
+    }
+
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+    
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $auditErrorMessage"
+}
 
 try {
-    Write-Information "Searching for Exchange users.."
+    Write-Verbose "Querying Exchange Online users"
     
     $exchangeOnlineUsers = Get-User -ResultSize Unlimited
     $users = $exchangeOnlineUsers
     $resultCount = $users.id.Count
-            
-    Write-Information "Result count: $resultCount"
+
+    Write-Information "Successfully queried Exchange Online users. Result count: $resultCount"
         
-    if($resultCount -gt 0){
-        foreach($user in $users){
+    if ($resultCount -gt 0) {
+        foreach ($user in $users) {
             $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
                 
             $returnObject = @{
-                name=$displayValue;
-                UserPrincipalName="$($user.UserPrincipalName)";
-                id="$($user.id)";
+                Name              = $displayValue;
+                UserPrincipalName = "$($user.UserPrincipalName)";
+                Id                = "$($user.id)";
             }
             Write-Output $returnObject
         }
     }
-} catch {
-    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online users. Error: $($_.Exception.Message)" + $errorDetailsMessage)
-} finally {
-    Write-Verbose "Disconnecting from Exchange Online"
-    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error searching for Exchange Online users. Error Message: $auditErrorMessage"
+}
+finally {
+    Write-Verbose "Disconnection from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop    
     Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
-[{"key":"name","type":0},{"key":"UserPrincipalName","type":0},{"key":"id","type":0}]
+[{"key":"Name","type":0},{"key":"UserPrincipalName","type":0},{"key":"Id","type":0}]
 '@ 
 $tmpInput = @'
 []
 '@ 
 $dataSourceGuid_1 = [PSCustomObject]@{} 
 $dataSourceGuid_1_Name = @'
-Exchange-online-user-generate-table
+Exchange-online-user-generate-table v2
 '@ 
 Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_1_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_1) 
-<# End: DataSource "Exchange-online-user-generate-table" #>
+<# End: DataSource "Exchange-online-user-generate-table v2" #>
 
-<# Begin: DataSource "Exchange-Online-group-generate-table-wildcard" #>
+<# Begin: DataSource "Exchange-Online-group-generate-table-owners v2" #>
 $tmpPsScript = @'
 # Set TLS to accept TLS, TLS 1.1 and TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
@@ -520,204 +685,178 @@ $VerbosePreference = "SilentlyContinue"
 $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
-# Exchange parameters
-$username = $ExchangeOnlineAdminUsername
-$password = $ExchangeOnlineAdminPassword
+# Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
+# Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
+$AADOrganization = $AADExchangeOrganization
+$AADAppID = $AADExchangeAppID
+$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
 
-# Connect to Exchange Online
-try{
-    Write-Verbose "Connecting to Exchange Online"
+# PowerShell commands to import
+$commands = @(
+    "Get-User" # Always required
+    , "Get-DistributionGroup"
+)
 
-    # Import module
-    $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-Group")
+#region functions
+function Resolve-HTTPError {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ''
+        }
+        if ($ErrorObject.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message
+        }
+        elseif ($ErrorObject.Exception.GetType().FullName -eq 'System.Net.WebException') {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
+        }
+        Write-Output $httpErrorObj
+    }
+}
+#endregion functions
 
-    # If module is imported say that and do nothing
-    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-        Write-Verbose "Module $ModuleName is already imported."
+# Import module
+$moduleName = "ExchangeOnlineManagement"
+
+# If module is imported say that and do nothing
+if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+    Write-Verbose "Module $ModuleName is already imported."
+}
+else {
+    # If module is not imported, but available on disk then import
+    if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+        $module = Import-Module $ModuleName -Cmdlet $commands
+        Write-Verbose "Imported module $ModuleName"
     }
     else {
-        # If module is not imported, but available on disk then import
-        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-            $module = Import-Module $ModuleName -Cmdlet $commands
-            Write-Verbose "Imported module $ModuleName"
-        }
-        else {
-            # If the module is not imported, not available and not in the online gallery then abort
-            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-        }
+        # If the module is not imported, not available and not in the online gallery then abort
+        throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+    }
+}
+
+# Connect to Exchange
+try {
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
+    $exchangeSessionParams = @{
+        Organization          = $AADOrganization
+        AppID                 = $AADAppID
+        CertificateThumbPrint = $AADCertificateThumbprint
+        CommandName           = $commands
+        ShowBanner            = $false
+        ShowProgress          = $false
+        TrackPerformance      = $false
+        ErrorAction           = 'Stop'
     }
 
-        
-    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
-    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+    
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
 
-}catch{
-    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
-    Write-Error "$InvocationInfoPositionMessage"
-    throw "Could not connect to Exchange Online, error: $_"
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $auditErrorMessage"
 }
 
 try {
-    $searchValue = $datasource.searchValue
-    $searchQuery = "*$searchValue*"
-     
-    if([String]::IsNullOrEmpty($searchValue) -eq $true){
-        # Do nothing
-    }else{ 
-        Write-Information "Searching for Exchange Online groups.."
-        
-        $exchangeOnlineGroups = Get-Group -Identity *
+    $groupIdentity = $datasource.selectedGroup.id
 
-        Write-Information -Message "SearchQuery: $searchQuery"
-        Write-Information -Message "Searching for: $searchQuery"
-        
-        # Filter for specicic group by Display name
-        $exchangeOnlineGroups = foreach($exchangeOnlineGroup in $exchangeOnlineGroups){
-            if($exchangeOnlineGroup.displayName -like $searchQuery){
-                $exchangeOnlineGroup
-            }
-        }
-
-        $groups = $exchangeOnlineGroups
-        $resultCount = $groups.id.Count
-     
-        Write-Information -Message "Result count: $resultCount"
-     
-        if($resultCount -gt 0){
-            foreach($group in $groups){
-                $returnObject = @{
-                    name="$($group.displayName)";
-                    id="$($group.id)";
-                    description="$($group.description)";
-                    groupType ="$($group.GroupType)"
-                }
-                Write-Output $returnObject
-            }
-        }
-    }
-} catch {
-    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online groups. Error: $($_.Exception.Message)" + $errorDetailsMessage)
-} finally {
-    Write-Verbose "Disconnecting from Exchange Online"
-    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
-    Write-Information "Successfully disconnected from Exchange Online"
-}
-'@ 
-$tmpModel = @'
-[{"key":"groupType","type":0},{"key":"description","type":0},{"key":"name","type":0},{"key":"id","type":0}]
-'@ 
-$tmpInput = @'
-[{"description":null,"translateDescription":false,"inputFieldType":1,"key":"searchValue","type":0,"options":1}]
-'@ 
-$dataSourceGuid_0 = [PSCustomObject]@{} 
-$dataSourceGuid_0_Name = @'
-Exchange-Online-group-generate-table-wildcard
-'@ 
-Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_0_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_0) 
-<# End: DataSource "Exchange-Online-group-generate-table-wildcard" #>
-
-<# Begin: DataSource "Exchange-Online-group-generate-table-owners" #>
-$tmpPsScript = @'
-# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
-
-$VerbosePreference = "SilentlyContinue"
-$InformationPreference = "Continue"
-$WarningPreference = "Continue"
-
-# Exchange parameters
-$username = $ExchangeOnlineAdminUsername
-$password = $ExchangeOnlineAdminPassword
-
-# Connect to Exchange Online
-try{
-    Write-Verbose "Connecting to Exchange Online"
-
-    # Import module
-    $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-DistributionGroup","Get-User")
-
-    # If module is imported say that and do nothing
-    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-        Write-Verbose "Module $ModuleName is already imported."
-    }
-    else {
-        # If module is not imported, but available on disk then import
-        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-            $module = Import-Module $ModuleName -Cmdlet $commands
-            Write-Verbose "Imported module $ModuleName"
-        }
-        else {
-            # If the module is not imported, not available and not in the online gallery then abort
-            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-        }
-    }
-
-        
-    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
-    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
-
-}catch{
-    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
-    Write-Error "$InvocationInfoPositionMessage"
-    throw "Could not connect to Exchange Online, error: $_"
-}
-
-try {
-    $Identity = $datasource.selectedGroup.id
-
-    if([String]::IsNullOrEmpty($Identity) -eq $true){
+    if ([String]::IsNullOrEmpty($groupIdentity) -eq $true) {
         Write-Error "No Group id provided"
-    }else{ 
-        Write-Information "Searching for Exchange Online group owners.."
+    }
+    else { 
+        Write-Verbose "Querying Exchange Online group owners"
         
-        $exchangeOnlineUsers = (Get-DistributionGroup -Identity $Identity).managedBy
-        $users = foreach($exchangeOnlineUser in $exchangeOnlineUsers){
-            Get-User $exchangeOnlineUser
+        $exchangeOnlineGroupOwners = (Get-DistributionGroup -Identity $groupIdentity).managedBy
+        $exchangeOnlineUsers = foreach ($exchangeOnlineGroupOwner in $exchangeOnlineGroupOwners) {
+            Get-User $exchangeOnlineGroupOwner
         }
+        $users = $exchangeOnlineUsers
         $resultCount = $users.id.Count
-        Write-Information  "Result count: $resultCount"
+        
+        Write-Information "Successfully queried Exchange Online group owners. Result count: $resultCount"
          
-        if($resultCount -gt 0){
-            foreach($user in $users){
+        if ($resultCount -gt 0) {
+            foreach ($user in $users) {
                 $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
                   
                 $returnObject = @{
-                    windowsLiveID="$($user.WindowsLiveID)";
-                    name=$displayValue;
-                    id="$($user.id)";
+                    Name              = $displayValue;
+                    UserPrincipalName = "$($user.UserPrincipalName)";
+                    Id                = "$($user.id)";
                 }
                 Write-Output $returnObject
             }
         }
     }
-} catch {
-    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online group owners. Error: $($_.Exception.Message)" + $errorDetailsMessage)
-} finally {
-    Write-Verbose "Disconnecting from Exchange Online"
-    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error searching for Exchange Online group owners. Error Message: $auditErrorMessage"
+}
+finally {
+    Write-Verbose "Disconnection from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop    
     Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
-[{"key":"windowsLiveID","type":0},{"key":"id","type":0},{"key":"name","type":0}]
+[{"key":"Name","type":0},{"key":"UserPrincipalName","type":0},{"key":"Id","type":0}]
 '@ 
 $tmpInput = @'
 [{"description":null,"translateDescription":false,"inputFieldType":1,"key":"selectedGroup","type":0,"options":1}]
 '@ 
 $dataSourceGuid_2 = [PSCustomObject]@{} 
 $dataSourceGuid_2_Name = @'
-Exchange-Online-group-generate-table-owners
+Exchange-Online-group-generate-table-owners v2
 '@ 
 Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_2_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_2) 
-<# End: DataSource "Exchange-Online-group-generate-table-owners" #>
+<# End: DataSource "Exchange-Online-group-generate-table-owners v2" #>
 
 <# Begin: DataSource "Exchange-Online-group-generate-table-members v2" #>
 $tmpPsScript = @'
@@ -728,83 +867,165 @@ $VerbosePreference = "SilentlyContinue"
 $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
-# Exchange parameters
-$username = $ExchangeOnlineAdminUsername
-$password = $ExchangeOnlineAdminPassword
+# Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
+# Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
+$AADOrganization = $AADExchangeOrganization
+$AADAppID = $AADExchangeAppID
+$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
 
-# Connect to Exchange Online
-try{
-    Write-Verbose "Connecting to Exchange Online"
+# PowerShell commands to import
+$commands = @(
+    "Get-User" # Always required
+    , "Get-DistributionGroupMember"
+)
 
-    # Import module
-    $moduleName = "ExchangeOnlineManagement"
-    $commands = @("Get-DistributionGroupMember")
+#region functions
+function Resolve-HTTPError {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ''
+        }
+        if ($ErrorObject.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message
+        }
+        elseif ($ErrorObject.Exception.GetType().FullName -eq 'System.Net.WebException') {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
+        }
+        Write-Output $httpErrorObj
+    }
+}
+#endregion functions
 
-    # If module is imported say that and do nothing
-    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-        Write-Verbose "Module $ModuleName is already imported."
+# Import module
+$moduleName = "ExchangeOnlineManagement"
+
+# If module is imported say that and do nothing
+if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+    Write-Verbose "Module $ModuleName is already imported."
+}
+else {
+    # If module is not imported, but available on disk then import
+    if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+        $module = Import-Module $ModuleName -Cmdlet $commands
+        Write-Verbose "Imported module $ModuleName"
     }
     else {
-        # If module is not imported, but available on disk then import
-        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-            $module = Import-Module $ModuleName -Cmdlet $commands
-            Write-Verbose "Imported module $ModuleName"
-        }
-        else {
-            # If the module is not imported, not available and not in the online gallery then abort
-            throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-        }
+        # If the module is not imported, not available and not in the online gallery then abort
+        throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+    }
+}
+
+# Connect to Exchange
+try {
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
+    $exchangeSessionParams = @{
+        Organization          = $AADOrganization
+        AppID                 = $AADAppID
+        CertificateThumbPrint = $AADCertificateThumbprint
+        CommandName           = $commands
+        ShowBanner            = $false
+        ShowProgress          = $false
+        TrackPerformance      = $false
+        ErrorAction           = 'Stop'
     }
 
-        
-    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)
-    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+    
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
 
-}catch{
-    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage
-    Write-Error "$InvocationInfoPositionMessage"
-    throw "Could not connect to Exchange Online, error: $_"
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $auditErrorMessage"
 }
 
 try {
-    $Identity = $datasource.selectedGroup.id
+    $groupIdentity = $datasource.selectedGroup.id
 
-    if([String]::IsNullOrEmpty($Identity) -eq $true){
+    if ([String]::IsNullOrEmpty($groupIdentity) -eq $true) {
         Write-Error "No Group id provided"
-    }else{ 
-        Write-Information "Searching for Exchange Online group members.."
+    }
+    else { 
+        Write-Verbose "Querying Exchange Online group members"
         
-        $exchangeOnlineUsers = Get-DistributionGroupMember -Identity $Identity
+        $exchangeOnlineUsers = Get-DistributionGroupMember -Identity $groupIdentity
         $users = $exchangeOnlineUsers
         $resultCount = $users.id.Count
-        Write-Information  "Result count: $resultCount"
+        
+        Write-Information "Successfully queried Exchange Online group members. Result count: $resultCount"
          
-        if($resultCount -gt 0){
-            foreach($user in $users){
+        if ($resultCount -gt 0) {
+            foreach ($user in $users) {
                 $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
                   
                 $returnObject = @{
-                    windowsLiveID="$($user.WindowsLiveID)";
-                    name=$displayValue;
-                    id="$($user.id)";
+                    Name              = $displayValue;
+                    UserPrincipalName = "$($user.UserPrincipalName)";
+                    Id                = "$($user.id)";
                 }
                 Write-Output $returnObject
             }
         }
     }
-} catch {
-    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online group members. Error: $($_.Exception.Message)" + $errorDetailsMessage)
-} finally {
-    Write-Verbose "Disconnecting from Exchange Online"
-    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error searching for Exchange Online group members. Error Message: $auditErrorMessage"
+}
+finally {
+    Write-Verbose "Disconnection from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop    
     Write-Information "Successfully disconnected from Exchange Online"
 }
 '@ 
 $tmpModel = @'
-[{"key":"windowsLiveID","type":0},{"key":"id","type":0},{"key":"name","type":0}]
+[{"key":"Name","type":0},{"key":"UserPrincipalName","type":0},{"key":"Id","type":0}]
 '@ 
 $tmpInput = @'
 [{"description":null,"translateDescription":false,"inputFieldType":1,"key":"selectedGroup","type":0,"options":1}]
@@ -815,11 +1036,192 @@ Exchange-Online-group-generate-table-members v2
 '@ 
 Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_4_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_4) 
 <# End: DataSource "Exchange-Online-group-generate-table-members v2" #>
+
+<# Begin: DataSource "Exchange-Online-group-generate-table-wildcard v2" #>
+$tmpPsScript = @'
+# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
+
+$VerbosePreference = "SilentlyContinue"
+$InformationPreference = "Continue"
+$WarningPreference = "Continue"
+
+# Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
+# Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
+$AADOrganization = $AADExchangeOrganization
+$AADAppID = $AADExchangeAppID
+$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
+
+# PowerShell commands to import
+$commands = @(
+    "Get-User" # Always required
+    , "Get-Group"
+    , "Get-DistributionGroup"
+)
+
+#region functions
+function Resolve-HTTPError {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ''
+        }
+        if ($ErrorObject.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message
+        }
+        elseif ($ErrorObject.Exception.GetType().FullName -eq 'System.Net.WebException') {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
+        }
+        Write-Output $httpErrorObj
+    }
+}
+#endregion functions
+
+# Import module
+$moduleName = "ExchangeOnlineManagement"
+
+# If module is imported say that and do nothing
+if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+    Write-Verbose "Module $ModuleName is already imported."
+}
+else {
+    # If module is not imported, but available on disk then import
+    if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+        $module = Import-Module $ModuleName -Cmdlet $commands
+        Write-Verbose "Imported module $ModuleName"
+    }
+    else {
+        # If the module is not imported, not available and not in the online gallery then abort
+        throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+    }
+}
+
+# Connect to Exchange
+try {
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
+    $exchangeSessionParams = @{
+        Organization          = $AADOrganization
+        AppID                 = $AADAppID
+        CertificateThumbPrint = $AADCertificateThumbprint
+        CommandName           = $commands
+        ShowBanner            = $false
+        ShowProgress          = $false
+        TrackPerformance      = $false
+        ErrorAction           = 'Stop'
+    }
+
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+    
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $auditErrorMessage"
+}
+
+try {
+    $searchValue = $datasource.searchValue
+
+    if ([String]::IsNullOrEmpty($searchValue) -eq $true) {
+        # Do nothing
+    }
+    else { 
+        $searchFilter = "displayName -like '*$searchValue*'"
+        Write-Verbose "Querying Exchange Online groups with Filter '$($searchFilter)'"
+
+        $exchangeOnlineGroups = Get-Group -Filter $searchFilter
+
+        $groups = $exchangeOnlineGroups
+        $resultCount = $groups.id.Count
+     
+        Write-Information "Successfully queried Exchange Online groups with Filter '$($searchFilter)'. Result count: $resultCount"
+     
+        if ($resultCount -gt 0) {
+            foreach ($group in $groups) {
+                $returnObject = @{
+                    name        = "$($group.displayName)";
+                    id          = "$($group.id)";
+                    description = "$($group.description)";
+                    groupType   = "$($group.GroupType)"
+                }
+                Write-Output $returnObject
+            }
+        }
+    }
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error searching for Exchange Online groups with Filter '$($searchFilter)'. Error Message: $auditErrorMessage"
+}
+finally {
+    Write-Verbose "Disconnection from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop    
+    Write-Information "Successfully disconnected from Exchange Online"
+}
+'@ 
+$tmpModel = @'
+[{"key":"description","type":0},{"key":"groupType","type":0},{"key":"name","type":0},{"key":"id","type":0}]
+'@ 
+$tmpInput = @'
+[{"description":null,"translateDescription":false,"inputFieldType":1,"key":"searchValue","type":0,"options":1}]
+'@ 
+$dataSourceGuid_0 = [PSCustomObject]@{} 
+$dataSourceGuid_0_Name = @'
+Exchange-Online-group-generate-table-wildcard v2
+'@ 
+Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_0_Name -DatasourceType "4" -DatasourceInput $tmpInput -DatasourcePsScript $tmpPsScript -DatasourceModel $tmpModel -returnObject ([Ref]$dataSourceGuid_0) 
+<# End: DataSource "Exchange-Online-group-generate-table-wildcard v2" #>
 <# End: HelloID Data sources #>
 
 <# Begin: Dynamic Form "Exchange Online - Group - Manage memberships" #>
 $tmpSchema = @"
-[{"label":"Select group","fields":[{"key":"searchfield","templateOptions":{"label":"Search","placeholder":""},"type":"input","summaryVisibility":"Hide element","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":false},{"key":"gridGroups","templateOptions":{"label":"Select group","required":true,"grid":{"columns":[{"headerName":"Description","field":"description"},{"headerName":"Id","field":"id"},{"headerName":"Name","field":"name"},{"headerName":"Group Type","field":"groupType"}],"height":300,"rowSelection":"single"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_0","input":{"propertyInputs":[{"propertyName":"searchValue","otherFieldValue":{"otherFieldKey":"searchfield"}}]}},"useFilter":false},"type":"grid","summaryVisibility":"Show","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":true}]},{"label":"Members","fields":[{"key":"owners","templateOptions":{"label":"Manage group owners","required":false,"filterable":true,"useDataSource":true,"dualList":{"options":[{"guid":"75ea2890-88f8-4851-b202-626123054e14","Name":"Apple"},{"guid":"0607270d-83e2-4574-9894-0b70011b663f","Name":"Pear"},{"guid":"1ef6fe01-3095-4614-a6db-7c8cd416ae3b","Name":"Orange"}],"optionKeyProperty":"name","optionDisplayProperty":"name","labelLeft":"Available","labelRight":"Owners"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_1","input":{"propertyInputs":[]}},"destinationDataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_2","input":{"propertyInputs":[{"propertyName":"selectedGroup","otherFieldValue":{"otherFieldKey":"gridGroups"}}]}}},"type":"duallist","summaryVisibility":"Show","sourceDataSourceIdentifierSuffix":"source-datasource","destinationDataSourceIdentifierSuffix":"destination-datasource","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":false},{"key":"members","templateOptions":{"label":"Manage group memberships","required":false,"filterable":true,"useDataSource":true,"dualList":{"options":[{"guid":"75ea2890-88f8-4851-b202-626123054e14","Name":"Apple"},{"guid":"0607270d-83e2-4574-9894-0b70011b663f","Name":"Pear"},{"guid":"1ef6fe01-3095-4614-a6db-7c8cd416ae3b","Name":"Orange"}],"optionKeyProperty":"name","optionDisplayProperty":"name","labelLeft":"Available","labelRight":"Member of"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_3","input":{"propertyInputs":[]}},"destinationDataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_4","input":{"propertyInputs":[{"propertyName":"selectedGroup","otherFieldValue":{"otherFieldKey":"gridGroups"}}]}},"useFilter":false},"type":"duallist","summaryVisibility":"Show","sourceDataSourceIdentifierSuffix":"source-datasource","destinationDataSourceIdentifierSuffix":"destination-datasource","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":false}]}]
+[{"label":"Select group","fields":[{"key":"searchfield","templateOptions":{"label":"Search","placeholder":""},"type":"input","summaryVisibility":"Hide element","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":false},{"key":"gridGroups","templateOptions":{"label":"Select group","required":true,"grid":{"columns":[{"headerName":"Name","field":"name"},{"headerName":"Description","field":"description"},{"headerName":"Group Type","field":"groupType"},{"headerName":"Id","field":"id"}],"height":300,"rowSelection":"single"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_0","input":{"propertyInputs":[{"propertyName":"searchValue","otherFieldValue":{"otherFieldKey":"searchfield"}}]}},"useFilter":false},"type":"grid","summaryVisibility":"Show","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":true}]},{"label":"Members","fields":[{"key":"owners","templateOptions":{"label":"Manage group owners","required":false,"filterable":true,"useDataSource":true,"dualList":{"options":[{"guid":"75ea2890-88f8-4851-b202-626123054e14","Name":"Apple"},{"guid":"0607270d-83e2-4574-9894-0b70011b663f","Name":"Pear"},{"guid":"1ef6fe01-3095-4614-a6db-7c8cd416ae3b","Name":"Orange"}],"optionKeyProperty":"Name","optionDisplayProperty":"Name","labelLeft":"Available","labelRight":"Owners"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_1","input":{"propertyInputs":[]}},"destinationDataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_2","input":{"propertyInputs":[{"propertyName":"selectedGroup","otherFieldValue":{"otherFieldKey":"gridGroups"}}]}}},"type":"duallist","summaryVisibility":"Show","sourceDataSourceIdentifierSuffix":"source-datasource","destinationDataSourceIdentifierSuffix":"destination-datasource","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":false},{"key":"members","templateOptions":{"label":"Manage group memberships","required":false,"filterable":true,"useDataSource":true,"dualList":{"options":[{"guid":"75ea2890-88f8-4851-b202-626123054e14","Name":"Apple"},{"guid":"0607270d-83e2-4574-9894-0b70011b663f","Name":"Pear"},{"guid":"1ef6fe01-3095-4614-a6db-7c8cd416ae3b","Name":"Orange"}],"optionKeyProperty":"Name","optionDisplayProperty":"Name","labelLeft":"Available","labelRight":"Member of"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_3","input":{"propertyInputs":[]}},"destinationDataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_4","input":{"propertyInputs":[{"propertyName":"selectedGroup","otherFieldValue":{"otherFieldKey":"gridGroups"}}]}},"useFilter":false},"type":"duallist","summaryVisibility":"Show","sourceDataSourceIdentifierSuffix":"source-datasource","destinationDataSourceIdentifierSuffix":"destination-datasource","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":false}]}]
 "@ 
 
 $dynamicFormGuid = [PSCustomObject]@{} 
@@ -831,25 +1233,31 @@ Invoke-HelloIDDynamicForm -FormName $dynamicFormName -FormSchema $tmpSchema  -re
 
 <# Begin: Delegated Form Access Groups and Categories #>
 $delegatedFormAccessGroupGuids = @()
-foreach($group in $delegatedFormAccessGroupNames) {
-    try {
-        $uri = ($script:PortalBaseUrl +"api/v1/groups/$group")
-        $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false
-        $delegatedFormAccessGroupGuid = $response.groupGuid
-        $delegatedFormAccessGroupGuids += $delegatedFormAccessGroupGuid
-        
-        Write-Information "HelloID (access)group '$group' successfully found$(if ($script:debugLogging -eq $true) { ": " + $delegatedFormAccessGroupGuid })"
-    } catch {
-        Write-Error "HelloID (access)group '$group', message: $_"
+if(-not[String]::IsNullOrEmpty($delegatedFormAccessGroupNames)){
+    foreach($group in $delegatedFormAccessGroupNames) {
+        try {
+            $uri = ($script:PortalBaseUrl +"api/v1/groups/$group")
+            $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false
+            $delegatedFormAccessGroupGuid = $response.groupGuid
+            $delegatedFormAccessGroupGuids += $delegatedFormAccessGroupGuid
+            
+            Write-Information "HelloID (access)group '$group' successfully found$(if ($script:debugLogging -eq $true) { ": " + $delegatedFormAccessGroupGuid })"
+        } catch {
+            Write-Error "HelloID (access)group '$group', message: $_"
+        }
+    }
+    if($null -ne $delegatedFormAccessGroupGuids){
+        $delegatedFormAccessGroupGuids = ($delegatedFormAccessGroupGuids | Select-Object -Unique | ConvertTo-Json -Depth 100 -Compress)
     }
 }
-$delegatedFormAccessGroupGuids = ($delegatedFormAccessGroupGuids | Select-Object -Unique | ConvertTo-Json -Depth 100 -Compress)
 
 $delegatedFormCategoryGuids = @()
 foreach($category in $delegatedFormCategories) {
     try {
         $uri = ($script:PortalBaseUrl +"api/v1/delegatedformcategories/$category")
         $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false
+        $response = $response | Where-Object {$_.name.en -eq $category}
+        
         $tmpGuid = $response.delegatedFormCategoryGuid
         $delegatedFormCategoryGuids += $tmpGuid
         
@@ -878,7 +1286,7 @@ $delegatedFormName = @'
 Exchange Online - Group - Manage memberships
 '@
 $tmpTask = @'
-{"name":"Exchange Online - Group - Manage memberships","script":"# Set TLS to accept TLS, TLS 1.1 and TLS 1.2\r\n[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12\r\n\r\n$VerbosePreference = \"SilentlyContinue\"\r\n$InformationPreference = \"Continue\"\r\n$WarningPreference = \"Continue\"\r\n\r\n# Exchange parameters\r\n$username = $ExchangeOnlineAdminUsername\r\n$password = $ExchangeOnlineAdminPassword\r\n\r\n# Form input\r\n$groupId = $form.gridGroups.id\r\n$Owners = $form.owners.right\r\n$usersToAdd = $form.members.leftToRight\r\n$usersToRemove = $form.members.rightToLeft\r\n\r\n# Connect to Exchange Online\r\ntry{\r\n    Write-Verbose \"Connecting to Exchange Online\"\r\n\r\n    # Import module\r\n    $moduleName = \"ExchangeOnlineManagement\"\r\n    $commands = @(\"Get-Group\",\"Add-DistributionGroupMember\",\"Remove-DistributionGroupMember\")\r\n\r\n    # If module is imported say that and do nothing\r\n    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {\r\n        Write-Verbose \"Module $ModuleName is already imported.\"\r\n    }\r\n    else {\r\n        # If module is not imported, but available on disk then import\r\n        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {\r\n            $module = Import-Module $ModuleName -Cmdlet $commands\r\n            Write-Verbose \"Imported module $ModuleName\"\r\n        }\r\n        else {\r\n            # If the module is not imported, not available and not in the online gallery then abort\r\n            throw \"Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force\"\r\n        }\r\n    }\r\n\r\n        \r\n    # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).\r\n    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force\r\n    $credential = [System.Management.Automation.PSCredential]::new($username, $securePassword)\r\n    $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -PSSessionOption $remotePSSessionOption -ErrorAction Stop\r\n\r\n}catch{\r\n    $InvocationInfoPositionMessage = $_.InvocationInfo.PositionMessage\r\n    Write-Error \"$InvocationInfoPositionMessage\"\r\n    throw \"Could not connect to Exchange Online, error: $_\"\r\n}\r\n\r\ntry{\r\n    try {\r\n        Write-Verbose \"Searching for Exchange Online group ID=$groupId\"\r\n        \r\n        $exchangeOnlineGroup = Get-Group -Identity $groupId -ErrorAction Stop\r\n        Write-Information \"Succesfully found Exchange Online group [$groupId]\"\r\n    } catch {\r\n        Write-Error \"Could not find Exchange Online group [$groupId]. Error: $($_.Exception.Message)\"\r\n    }\r\n\r\n    # Add members\r\n    if($usersToAdd -ne $null){\r\n        try {\r\n            foreach($user in $usersToAdd){\r\n                $addMember = Add-DistributionGroupMember -Identity $exchangeOnlineGroup.Identity -Member $user.Id -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop\r\n            }\r\n\r\n            Write-Information \"Succesfully added Exchange Online users [$($usersToAdd | ConvertTo-Json)] to Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        } catch {\r\n            if($_ -like \"*already a member of the group*\"){\r\n                Write-Information \"The recipient $($user.Name) is already a member of the group $($exchangeOnlineGroup.Identity)\";\r\n            }elseif($_ -like \"*object '$($exchangeOnlineGroup.id)' couldn't be found*\"){\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }elseif($_ -like \"*Couldn't find object \"\"$($user.Id)\"\"*\"){\r\n                Write-Warning \"User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }else{\r\n                Write-Error \"Could not add Exchange Online users [$($usersToAdd | ConvertTo-Json)] to Exchange Online group [$($exchangeOnlineGroup.displayName). Error: $($_.Exception.Message)\"\r\n            }\r\n        }\r\n    }\r\n\r\n    # Remove members\r\n    if($usersToRemove -ne $null){\r\n        try {\r\n            foreach($user in $usersToRemove){\r\n                $removeMember = Remove-DistributionGroupMember -Identity $exchangeOnlineGroup.Identity -Member $user.Id -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop\r\n            }\r\n\r\n            Write-Information \"Succesfully removed Exchange Online users [$($usersToRemove | ConvertTo-Json)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        } catch {\r\n            if($_ -like \"*isn't a member of the group*\"){\r\n                Write-Information \"The recipient  $($user.Name) isn't a member of the group $($exchangeOnlineGroup.Identity))\";\r\n            }elseif($_ -like \"*object '$($exchangeOnlineGroup.id)' couldn't be found*\"){\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }elseif($_ -like \"*Couldn't find object \"\"$($user.Id)\"\"*\"){\r\n                Write-Warning \"User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action\";\r\n            }else{\r\n                Write-Error \"Could not remove Exchange Online users [$($usersToRemove | ConvertTo-Json)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $($_.Exception.Message)\"\r\n            }\r\n        }\r\n    }\r\n\r\n    # Update owners\r\n    if($OwnersToUpdate -ne $null){\r\n        try {\r\n            $groupParams = @{\r\n                Identity            =  $exchangeOnlineGroup.Identity\r\n                ManagedBy           =  $Owners.userPrincipalName\r\n            }\r\n\r\n            Write-Information \"Succesfully updated owners [$($Owners | ConvertTo-Json)] for Exchange Online group [$exchangeOnlineGroup.Identity]\"\r\n        } catch {\r\n            Write-Error \"Could not update owners [$($Owners | ConvertTo-Json)] for Exchange Online group [$exchangeOnlineGroup.Identity]. Error: $($_.Exception.Message)\"\r\n        }\r\n    }    \r\n} finally {\r\n    Write-Verbose \"Disconnecting from Exchange Online\"\r\n    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop\r\n    Write-Information \"Successfully disconnected from Exchange Online\"\r\n}","runInCloud":false}
+{"name":"Exchange Online - Group - Manage memberships","script":"# Set TLS to accept TLS, TLS 1.1 and TLS 1.2\r\n[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12\r\n\r\n$VerbosePreference = \"SilentlyContinue\"\r\n$InformationPreference = \"Continue\"\r\n$WarningPreference = \"Continue\"\r\n\r\n# Used to connect to Exchange Online in an unattended scripting scenario using a certificate.\r\n# Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps\r\n$AADOrganization = $AADExchangeOrganization\r\n$AADAppID = $AADExchangeAppID\r\n$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed\r\n\r\n# PowerShell commands to import\r\n$commands = @(\r\n    \"Get-User\" # Always required\r\n    , \"Get-Group\"\r\n    , \"Add-DistributionGroupMember\"\r\n    , \"Remove-DistributionGroupMember\"\r\n    , \"Set-DistributionGroup\"\r\n)\r\n\r\n# Form input\r\n$groupId = $form.gridGroups.id\r\n$Owners = $form.owners.right\r\n$usersToAdd = $form.members.leftToRight\r\n$usersToRemove = $form.members.rightToLeft\r\n\r\n#region functions\r\nfunction Resolve-HTTPError {\r\n    [CmdletBinding()]\r\n    param (\r\n        [Parameter(Mandatory,\r\n            ValueFromPipeline\r\n        )]\r\n        [object]$ErrorObject\r\n    )\r\n    process {\r\n        $httpErrorObj = [PSCustomObject]@{\r\n            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId\r\n            MyCommand             = $ErrorObject.InvocationInfo.MyCommand\r\n            RequestUri            = $ErrorObject.TargetObject.RequestUri\r\n            ScriptStackTrace      = $ErrorObject.ScriptStackTrace\r\n            ErrorMessage          = \u0027\u0027\r\n        }\r\n        if ($ErrorObject.Exception.GetType().FullName -eq \u0027Microsoft.PowerShell.Commands.HttpResponseException\u0027) {\r\n            $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message\r\n        }\r\n        elseif ($ErrorObject.Exception.GetType().FullName -eq \u0027System.Net.WebException\u0027) {\r\n            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()\r\n        }\r\n        Write-Output $httpErrorObj\r\n    }\r\n}\r\n#endregion functions\r\n\r\n# Import module\r\n$moduleName = \"ExchangeOnlineManagement\"\r\n\r\n# If module is imported say that and do nothing\r\nif (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {\r\n    Write-Verbose \"Module $ModuleName is already imported.\"\r\n}\r\nelse {\r\n    # If module is not imported, but available on disk then import\r\n    if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {\r\n        $module = Import-Module $ModuleName -Cmdlet $commands\r\n        Write-Verbose \"Imported module $ModuleName\"\r\n    }\r\n    else {\r\n        # If the module is not imported, not available and not in the online gallery then abort\r\n        throw \"Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force\"\r\n    }\r\n}\r\n\r\n# Connect to Exchange\r\ntry {\r\n    Write-Verbose \"Connecting to Exchange Online\"\r\n\r\n    # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).\r\n    $exchangeSessionParams = @{\r\n        Organization          = $AADOrganization\r\n        AppID                 = $AADAppID\r\n        CertificateThumbPrint = $AADCertificateThumbprint\r\n        CommandName           = $commands\r\n        ShowBanner            = $false\r\n        ShowProgress          = $false\r\n        TrackPerformance      = $false\r\n        ErrorAction           = \u0027Stop\u0027\r\n    }\r\n\r\n    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams\r\n    \r\n    Write-Information \"Successfully connected to Exchange Online\"\r\n}\r\ncatch {\r\n    $ex = $PSItem\r\n    if ( $($ex.Exception.GetType().FullName -eq \u0027Microsoft.PowerShell.Commands.HttpResponseException\u0027) -or $($ex.Exception.GetType().FullName -eq \u0027System.Net.WebException\u0027)) {\r\n        $errorObject = Resolve-HTTPError -Error $ex\r\n\r\n        $verboseErrorMessage = $errorObject.ErrorMessage\r\n\r\n        $auditErrorMessage = $errorObject.ErrorMessage\r\n    }\r\n\r\n    # If error message empty, fall back on $ex.Exception.Message\r\n    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {\r\n        $verboseErrorMessage = $ex.Exception.Message\r\n    }\r\n    if ([String]::IsNullOrEmpty($auditErrorMessage)) {\r\n        $auditErrorMessage = $ex.Exception.Message\r\n    }\r\n\r\n    Write-Verbose \"Error at Line \u0027$($ex.InvocationInfo.ScriptLineNumber)\u0027: $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)\"\r\n    throw \"Error connecting to Exchange Online. Error Message: $auditErrorMessage\"\r\n}\r\n\r\ntry {\r\n    try {\r\n        Write-Verbose \"Querying Exchange Online group with ID \u0027$groupId\u0027\"\r\n        $exchangeOnlineGroup = Get-Group -Identity $groupId -ErrorAction Stop\r\n        Write-Information \"Succesfully queried Exchange Online group with ID \u0027$groupId\u0027\"\r\n    }\r\n    catch {\r\n        $ex = $PSItem\r\n        if ( $($ex.Exception.GetType().FullName -eq \u0027Microsoft.PowerShell.Commands.HttpResponseException\u0027) -or $($ex.Exception.GetType().FullName -eq \u0027System.Net.WebException\u0027)) {\r\n            $errorObject = Resolve-HTTPError -Error $ex\r\n    \r\n            $verboseErrorMessage = $errorObject.ErrorMessage\r\n    \r\n            $auditErrorMessage = $errorObject.ErrorMessage\r\n        }\r\n    \r\n        # If error message empty, fall back on $ex.Exception.Message\r\n        if ([String]::IsNullOrEmpty($verboseErrorMessage)) {\r\n            $verboseErrorMessage = $ex.Exception.Message\r\n        }\r\n        if ([String]::IsNullOrEmpty($auditErrorMessage)) {\r\n            $auditErrorMessage = $ex.Exception.Message\r\n        }\r\n    \r\n        Write-Verbose \"Error at Line \u0027$($ex.InvocationInfo.ScriptLineNumber)\u0027: $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)\"        \r\n        throw \"Could not query Exchange Online group with ID \u0027$groupId\u0027. Error: $auditErrorMessage\"\r\n\r\n        # Clean up error variables\r\n        Remove-Variable \u0027verboseErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n        Remove-Variable \u0027auditErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n    }\r\n\r\n    # Add members\r\n    if ($usersToAdd -ne $null) {\r\n        try {\r\n            Write-Verbose \"Adding Exchange Online users [$($usersToAdd.Name -join \u0027,\u0027)] to Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n            \r\n            foreach ($user in $usersToAdd) {\r\n                $addMemberParams = @{\r\n                    Identity                        = $exchangeOnlineGroup.Identity\r\n                    Member                          = $user.Id\r\n                    BypassSecurityGroupManagerCheck = $true\r\n                    Confirm                         = $false\r\n                    ErrorAction                     = \u0027Stop\u0027\r\n                }\r\n\r\n                $addMember = Add-DistributionGroupMember @addMemberParams\r\n            }\r\n\r\n            Write-Information \"Succesfully added Exchange Online users [$($usersToAdd.Name -join \u0027,\u0027)] to Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        }\r\n        catch {\r\n            $ex = $PSItem\r\n            if ( $($ex.Exception.GetType().FullName -eq \u0027Microsoft.PowerShell.Commands.HttpResponseException\u0027) -or $($ex.Exception.GetType().FullName -eq \u0027System.Net.WebException\u0027)) {\r\n                $errorObject = Resolve-HTTPError -Error $ex\r\n        \r\n                $verboseErrorMessage = $errorObject.ErrorMessage\r\n        \r\n                $auditErrorMessage = $errorObject.ErrorMessage\r\n            }\r\n        \r\n            # If error message empty, fall back on $ex.Exception.Message\r\n            if ([String]::IsNullOrEmpty($verboseErrorMessage)) {\r\n                $verboseErrorMessage = $ex.Exception.Message\r\n            }\r\n            if ([String]::IsNullOrEmpty($auditErrorMessage)) {\r\n                $auditErrorMessage = $ex.Exception.Message\r\n            }\r\n\r\n            Write-Verbose \"Error at Line \u0027$($ex.InvocationInfo.ScriptLineNumber)\u0027: $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)\"\r\n            if ($auditErrorMessage -like \"*already a member of the group*\") {\r\n                Write-Information \"The recipient $($user.Name) is already a member of the group $($exchangeOnlineGroup.Identity)\";\r\n            }\r\n            elseif ($auditErrorMessage -like \"*object \u0027$($exchangeOnlineGroup.id)\u0027 couldn\u0027t be found*\") {\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn\u0027t be found. Possibly no longer exists. Skipping action\";\r\n            }\r\n            elseif ($auditErrorMessage -like \"*Couldn\u0027t find object \"\"$($user.Id)\"\"*\") {\r\n                Write-Warning \"User $($user.Name) couldn\u0027t be found. Possibly no longer exists. Skipping action\";\r\n            }\r\n            else {\r\n                Write-Error \"Could not add Exchange Online users [$($usersToAdd.Name -join \u0027,\u0027)] to Exchange Online group [$($exchangeOnlineGroup.displayName). Error: $auditErrorMessage\"\r\n            }\r\n\r\n            # Clean up error variables\r\n            Remove-Variable \u0027verboseErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n            Remove-Variable \u0027auditErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n        }\r\n    }\r\n\r\n    # Remove members\r\n    if ($usersToRemove -ne $null) {\r\n        try {\r\n            Write-Verbose \"Removing Exchange Online users [$($usersToRemove.Name -join \u0027,\u0027)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n\r\n            foreach ($user in $usersToRemove) {\r\n                $removeMemberParams = @{\r\n                    Identity                        = $exchangeOnlineGroup.Identity\r\n                    Member                          = $user.Id\r\n                    BypassSecurityGroupManagerCheck = $true\r\n                    Confirm                         = $false\r\n                    ErrorAction                     = \u0027Stop\u0027\r\n                }\r\n\r\n                $removeMember = Remove-DistributionGroupMember @removeMemberParams\r\n            }\r\n\r\n            Write-Information \"Succesfully removed Exchange Online users [$($usersToRemove.Name -join \u0027,\u0027)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        }\r\n        catch {\r\n            $ex = $PSItem\r\n            if ( $($ex.Exception.GetType().FullName -eq \u0027Microsoft.PowerShell.Commands.HttpResponseException\u0027) -or $($ex.Exception.GetType().FullName -eq \u0027System.Net.WebException\u0027)) {\r\n                $errorObject = Resolve-HTTPError -Error $ex\r\n\r\n                $verboseErrorMessage = $errorObject.ErrorMessage\r\n\r\n                $auditErrorMessage = $errorObject.ErrorMessage\r\n            }\r\n        \r\n            # If error message empty, fall back on $ex.Exception.Message\r\n            if ([String]::IsNullOrEmpty($verboseErrorMessage)) {\r\n                $verboseErrorMessage = $ex.Exception.Message\r\n            }\r\n            if ([String]::IsNullOrEmpty($auditErrorMessage)) {\r\n                $auditErrorMessage = $ex.Exception.Message\r\n            }\r\n \r\n            Write-Verbose \"Error at Line \u0027$($ex.InvocationInfo.ScriptLineNumber)\u0027: $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)\"\r\n            if ($auditErrorMessage -like \"*isn\u0027t a member of the group*\") {\r\n                Write-Information \"The recipient  $($user.Name) isn\u0027t a member of the group $($exchangeOnlineGroup.Identity))\";\r\n            }\r\n            elseif ($auditErrorMessage -like \"*object \u0027$($exchangeOnlineGroup.id)\u0027 couldn\u0027t be found*\") {\r\n                Write-Warning \"Group $($exchangeOnlineGroup.Identity) couldn\u0027t be found. Possibly no longer exists. Skipping action\";\r\n            }\r\n            elseif ($auditErrorMessage -like \"*Couldn\u0027t find object \"\"$($user.Id)\"\"*\") {\r\n                Write-Warning \"User $($user.Name) couldn\u0027t be found. Possibly no longer exists. Skipping action\";\r\n            }\r\n            else {\r\n                Write-Error \"Could not remove Exchange Online users [$($usersToRemove.Name -join \u0027,\u0027)] from Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $auditErrorMessage\"\r\n            }\r\n\r\n            # Clean up error variables\r\n            Remove-Variable \u0027verboseErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n            Remove-Variable \u0027auditErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n        }\r\n    }\r\n\r\n    # Update owners\r\n    if ($Owners -ne $null) {\r\n        try {\r\n            Write-Verbose \"Updating owners to [$($Owners.Name -join \u0027,\u0027)] for Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n\r\n            $updateOwnersParams = @{\r\n                Identity                        = $exchangeOnlineGroup.Identity\r\n                ManagedBy                       = $Owners.userPrincipalName\r\n                BypassSecurityGroupManagerCheck = $true\r\n                Confirm                         = $false\r\n                ErrorAction                     = \u0027Stop\u0027\r\n            }\r\n\r\n            $updateOwners = Set-DistributionGroup @updateOwnersParams\r\n\r\n            Write-Information \"Succesfully updated owners to [$($Owners.Name -join \u0027,\u0027)] for Exchange Online group [$($exchangeOnlineGroup.displayName)]\"\r\n        }\r\n        catch {\r\n            $ex = $PSItem\r\n            if ( $($ex.Exception.GetType().FullName -eq \u0027Microsoft.PowerShell.Commands.HttpResponseException\u0027) -or $($ex.Exception.GetType().FullName -eq \u0027System.Net.WebException\u0027)) {\r\n                $errorObject = Resolve-HTTPError -Error $ex\r\n        \r\n                $verboseErrorMessage = $errorObject.ErrorMessage\r\n        \r\n                $auditErrorMessage = $errorObject.ErrorMessage\r\n            }\r\n        \r\n            # If error message empty, fall back on $ex.Exception.Message\r\n            if ([String]::IsNullOrEmpty($verboseErrorMessage)) {\r\n                $verboseErrorMessage = $ex.Exception.Message\r\n            }\r\n            if ([String]::IsNullOrEmpty($auditErrorMessage)) {\r\n                $auditErrorMessage = $ex.Exception.Message\r\n            }\r\n\r\n            Write-Verbose \"Error at Line \u0027$($ex.InvocationInfo.ScriptLineNumber)\u0027: $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)\"\r\n            Write-Error \"Could not update owners $($Owners.Name -join \u0027,\u0027)] for Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $auditErrorMessage\"\r\n\r\n            # Clean up error variables\r\n            Remove-Variable \u0027verboseErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n            Remove-Variable \u0027auditErrorMessage\u0027 -ErrorAction SilentlyContinue\r\n        }\r\n    }    \r\n}\r\nfinally {\r\n    Write-Verbose \"Closing Exchange Online connection\"\r\n    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop      \r\n    Write-Information \"Successfully closed Exchange Online connection\"\r\n}","runInCloud":false}
 '@ 
 
 Invoke-HelloIDDelegatedForm -DelegatedFormName $delegatedFormName -DynamicFormGuid $dynamicFormGuid -AccessGroups $delegatedFormAccessGroupGuids -Categories $delegatedFormCategoryGuids -UseFaIcon "True" -FaIcon "fa fa-users" -task $tmpTask -returnObject ([Ref]$delegatedFormRef) 

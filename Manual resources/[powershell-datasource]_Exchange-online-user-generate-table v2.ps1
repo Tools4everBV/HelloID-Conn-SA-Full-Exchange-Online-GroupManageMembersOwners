@@ -5,54 +5,151 @@ $VerbosePreference = "SilentlyContinue"
 $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
-# Exchange parameters
-$exchangeOnlineConnectionUri = "https://outlook.office365.com/powershell-liveid/"
-$username = $ExchangeOnlineAdminUsername
-$password = $ExchangeOnlineAdminPassword
+# Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
+# Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
+$AADOrganization = $AADExchangeOrganization
+$AADAppID = $AADExchangeAppID
+$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
 
-# Connecto to Exchange
-try{
-    Write-Verbose "Connecting to Exchange Online.."
-    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $exchangeOnlineConnectionUri -Credential $credential -Authentication Basic -AllowRedirection -ErrorAction Stop 
-   
-    if($exchangeSession){
-        $exchangeOnlineSession = Import-PSSession $exchangeSession -AllowClobber -DisableNameChecking
-        Write-Information "Successfully connected to Office365"
-    }else{
-        throw "username or password is not correct"
+# PowerShell commands to import
+$commands = @(
+    "Get-User" # Always required
+)
+
+#region functions
+function Resolve-HTTPError {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ''
+        }
+        if ($ErrorObject.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message
+        }
+        elseif ($ErrorObject.Exception.GetType().FullName -eq 'System.Net.WebException') {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
+        }
+        Write-Output $httpErrorObj
     }
-}catch{
-    throw "Could not connect to Exchange Online, error: $($_.Exception.Message)"
+}
+#endregion functions
+
+# Import module
+$moduleName = "ExchangeOnlineManagement"
+
+# If module is imported say that and do nothing
+if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+    Write-Verbose "Module $ModuleName is already imported."
+}
+else {
+    # If module is not imported, but available on disk then import
+    if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+        $module = Import-Module $ModuleName -Cmdlet $commands
+        Write-Verbose "Imported module $ModuleName"
+    }
+    else {
+        # If the module is not imported, not available and not in the online gallery then abort
+        throw "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+    }
+}
+
+# Connect to Exchange
+try {
+    Write-Verbose "Connecting to Exchange Online"
+
+    # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
+    $exchangeSessionParams = @{
+        Organization          = $AADOrganization
+        AppID                 = $AADAppID
+        CertificateThumbPrint = $AADCertificateThumbprint
+        CommandName           = $commands
+        ShowBanner            = $false
+        ShowProgress          = $false
+        TrackPerformance      = $false
+        ErrorAction           = 'Stop'
+    }
+
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+    
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $auditErrorMessage"
 }
 
 try {
-    Write-Information "Searching for Exchange users.."
+    Write-Verbose "Querying Exchange Online users"
     
     $exchangeOnlineUsers = Get-User -ResultSize Unlimited
     $users = $exchangeOnlineUsers
     $resultCount = $users.id.Count
-            
-    Write-Information "Result count: $resultCount"
+
+    Write-Information "Successfully queried Exchange Online users. Result count: $resultCount"
         
-    if($resultCount -gt 0){
-        foreach($user in $users){
+    if ($resultCount -gt 0) {
+        foreach ($user in $users) {
             $displayValue = $user.displayName + " [" + $user.WindowsLiveID + "]"
                 
             $returnObject = @{
-                name=$displayValue;
-                UserPrincipalName="$($user.UserPrincipalName)";
-                id="$($user.id)";
+                Name              = $displayValue;
+                UserPrincipalName = "$($user.UserPrincipalName)";
+                Id                = "$($user.id)";
             }
             Write-Output $returnObject
         }
     }
-} catch {
-    $errorDetailsMessage = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
-    Write-Error ("Error searching for Exchange Online users. Error: $($_.Exception.Message)" + $errorDetailsMessage)
-} finally {
-    Write-Information -Message "Closing Exchange Online connection"
-    $exchangeSession | Remove-PSSession -ErrorAction Stop       
-    Write-Information -Message "Successfully closed Exchange Online connection"
+}
+catch {
+    $ex = $PSItem
+    if ( $($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObject = Resolve-HTTPError -Error $ex
+
+        $verboseErrorMessage = $errorObject.ErrorMessage
+
+        $auditErrorMessage = $errorObject.ErrorMessage
+    }
+
+    # If error message empty, fall back on $ex.Exception.Message
+    if ([String]::IsNullOrEmpty($verboseErrorMessage)) {
+        $verboseErrorMessage = $ex.Exception.Message
+    }
+    if ([String]::IsNullOrEmpty($auditErrorMessage)) {
+        $auditErrorMessage = $ex.Exception.Message
+    }
+
+    Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    throw "Error searching for Exchange Online users. Error Message: $auditErrorMessage"
+}
+finally {
+    Write-Verbose "Disconnection from Exchange Online"
+    $exchangeSessionEnd = Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop    
+    Write-Information "Successfully disconnected from Exchange Online"
 }
