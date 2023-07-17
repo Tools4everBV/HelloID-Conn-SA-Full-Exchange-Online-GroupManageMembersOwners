@@ -7,9 +7,9 @@ $WarningPreference = "Continue"
 
 # Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
 # Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
-$AADOrganization = $AADExchangeOrganization
-$AADAppID = $AADExchangeAppID
-$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
+$AzureADExchangeOrganization = $AADExchangeOrganization
+$AzureADExchangeAppID = $AADExchangeAppID
+$AzureADExchangeCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
 
 # PowerShell commands to import
 $commands = @(
@@ -70,9 +70,9 @@ try {
 
     # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
     $exchangeSessionParams = @{
-        Organization          = $AADOrganization
-        AppID                 = $AADAppID
-        CertificateThumbPrint = $AADCertificateThumbprint
+        Organization          = $AzureADExchangeOrganization
+        AppID                 = $AzureADExchangeAppID
+        CertificateThumbPrint = $AzureADExchangeCertificateThumbprint
         CommandName           = $commands
         ShowBanner            = $false
         ShowProgress          = $false

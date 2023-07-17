@@ -7,9 +7,9 @@ $WarningPreference = "Continue"
 
 # Used to connect to Exchange Online in an unattended scripting scenario using a certificate.
 # Follow the Microsoft Docs on how to set up the Azure App Registration: https://docs.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps
-$AADOrganization = $AADExchangeOrganization
-$AADAppID = $AADExchangeAppID
-$AADCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
+$AzureADExchangeOrganization = $AADExchangeOrganization
+$AzureADExchangeAppID = $AADExchangeAppID
+$AzureADExchangeCertificateThumbprint = $AADExchangeCertificateThumbprint # Certificate has to be locally installed
 
 # PowerShell commands to import
 $commands = @(
@@ -79,9 +79,9 @@ try {
 
     # Connect to Exchange Online in an unattended scripting scenario using a certificate thumbprint (certificate has to be locally installed).
     $exchangeSessionParams = @{
-        Organization          = $AADOrganization
-        AppID                 = $AADAppID
-        CertificateThumbPrint = $AADCertificateThumbprint
+        Organization          = $AzureADExchangeOrganization
+        AppID                 = $AzureADExchangeAppID
+        CertificateThumbPrint = $AzureADExchangeCertificateThumbprint
         CommandName           = $commands
         ShowBanner            = $false
         ShowProgress          = $false
@@ -112,6 +112,16 @@ catch {
     }
 
     Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+    $Log = @{
+        Action            = "Undefined" # optional. ENUM (undefined = default) 
+        System            = "Exchange Online" # optional (free format text) 
+        Message           = "Failed to connect to Exchange Online" # required (free format text) 
+        IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+        TargetDisplayName = "Exchange Online" # optional (free format text) 
+        
+    }
+    #send result back  
+    Write-Information -Tags "Audit" -MessageData $log
     throw "Error connecting to Exchange Online. Error Message: $auditErrorMessage"
 }
 
@@ -139,7 +149,17 @@ try {
             $auditErrorMessage = $ex.Exception.Message
         }
     
-        Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"        
+        Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
+        $Log = @{
+            Action            = "Undefined" # optional. ENUM (undefined = default) 
+            System            = "Exchange Online" # optional (free format text) 
+            Message           = "Could not query Exchange Online group with ID '$groupId'. Error: $auditErrorMessage" # required (free format text) 
+            IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+            TargetDisplayName = "Exchange Online" # optional (free format text) 
+            
+        }
+        #send result back  
+        Write-Information -Tags "Audit" -MessageData $log
         throw "Could not query Exchange Online group with ID '$groupId'. Error: $auditErrorMessage"
 
         # Clean up error variables
@@ -165,6 +185,16 @@ try {
             }
 
             Write-Information "Succesfully added Exchange Online users [$($usersToAdd.Name -join ',')] to Exchange Online group [$($exchangeOnlineGroup.displayName)]"
+            $Log = @{
+                Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+                System            = "Exchange Online" # optional (free format text) 
+                Message           = "Succesfully added Exchange Online users [$($usersToAdd.Name -join ',')] to Exchange Online group [$($exchangeOnlineGroup.displayName)]" # required (free format text) 
+                IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+            }
+            #send result back  
+            Write-Information -Tags "Audit" -MessageData $log
         }
         catch {
             $ex = $PSItem
@@ -187,15 +217,55 @@ try {
             Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
             if ($auditErrorMessage -like "*already a member of the group*") {
                 Write-Information "The recipient $($user.Name) is already a member of the group $($exchangeOnlineGroup.Identity)";
+                $Log = @{
+                    Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "The recipient $($user.Name) is already a member of the group $($exchangeOnlineGroup.Identity)" # required (free format text) 
+                    IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
             elseif ($auditErrorMessage -like "*object '$($exchangeOnlineGroup.id)' couldn't be found*") {
                 Write-Warning "Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action";
+                $Log = @{
+                    Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action" # required (free format text) 
+                    IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
             elseif ($auditErrorMessage -like "*Couldn't find object ""$($user.Id)""*") {
                 Write-Warning "User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action";
+                $Log = @{
+                    Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action" # required (free format text) 
+                    IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
             else {
                 Write-Error "Could not add Exchange Online users [$($usersToAdd.Name -join ',')] to Exchange Online group [$($exchangeOnlineGroup.displayName). Error: $auditErrorMessage"
+                $Log = @{
+                    Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "Could not add Exchange Online users [$($usersToAdd.Name -join ',')] to Exchange Online group [$($exchangeOnlineGroup.displayName). Error: $auditErrorMessage" # required (free format text) 
+                    IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
 
             # Clean up error variables
@@ -222,6 +292,16 @@ try {
             }
 
             Write-Information "Succesfully removed Exchange Online users [$($usersToRemove.Name -join ',')] from Exchange Online group [$($exchangeOnlineGroup.displayName)]"
+            $Log = @{
+                Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+                System            = "Exchange Online" # optional (free format text) 
+                Message           = "Succesfully removed Exchange Online users [$($usersToRemove.Name -join ',')] from Exchange Online group [$($exchangeOnlineGroup.displayName)]" # required (free format text) 
+                IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+            }
+            #send result back  
+            Write-Information -Tags "Audit" -MessageData $log
         }
         catch {
             $ex = $PSItem
@@ -244,15 +324,55 @@ try {
             Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
             if ($auditErrorMessage -like "*isn't a member of the group*") {
                 Write-Information "The recipient  $($user.Name) isn't a member of the group $($exchangeOnlineGroup.Identity))";
+                $Log = @{
+                    Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "The recipient  $($user.Name) isn't a member of the group $($exchangeOnlineGroup.Identity))" # required (free format text) 
+                    IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
             elseif ($auditErrorMessage -like "*object '$($exchangeOnlineGroup.id)' couldn't be found*") {
                 Write-Warning "Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action";
+                $Log = @{
+                    Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "Group $($exchangeOnlineGroup.Identity) couldn't be found. Possibly no longer exists. Skipping action" # required (free format text) 
+                    IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
             elseif ($auditErrorMessage -like "*Couldn't find object ""$($user.Id)""*") {
                 Write-Warning "User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action";
+                $Log = @{
+                    Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "User $($user.Name) couldn't be found. Possibly no longer exists. Skipping action" # required (free format text) 
+                    IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
             else {
                 Write-Error "Could not remove Exchange Online users [$($usersToRemove.Name -join ',')] from Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $auditErrorMessage"
+                $Log = @{
+                    Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+                    System            = "Exchange Online" # optional (free format text) 
+                    Message           = "Could not remove Exchange Online users [$($usersToRemove.Name -join ',')] from Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $auditErrorMessage" # required (free format text) 
+                    IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                    TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                    TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+                }
+                #send result back  
+                Write-Information -Tags "Audit" -MessageData $log
             }
 
             # Clean up error variables
@@ -277,6 +397,16 @@ try {
             $updateOwners = Set-DistributionGroup @updateOwnersParams
 
             Write-Information "Succesfully updated owners to [$($Owners.Name -join ',')] for Exchange Online group [$($exchangeOnlineGroup.displayName)]"
+            $Log = @{
+                Action            = "UpdateResource" # optional. ENUM (undefined = default) 
+                System            = "Exchange Online" # optional (free format text) 
+                Message           = "Succesfully updated owners to [$($Owners.Name -join ',')] for Exchange Online group [$($exchangeOnlineGroup.displayName)]" # required (free format text) 
+                IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+            }
+            #send result back  
+            Write-Information -Tags "Audit" -MessageData $log
         }
         catch {
             $ex = $PSItem
@@ -298,7 +428,16 @@ try {
 
             Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($verboseErrorMessage)"
             Write-Error "Could not update owners $($Owners.Name -join ',')] for Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $auditErrorMessage"
-
+            $Log = @{
+                Action            = "UpdateResource" # optional. ENUM (undefined = default) 
+                System            = "Exchange Online" # optional (free format text) 
+                Message           = "Could not update owners $($Owners.Name -join ',')] for Exchange Online group [$($exchangeOnlineGroup.displayName)]. Error: $auditErrorMessage" # required (free format text) 
+                IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                TargetDisplayName = "$($exchangeOnlineGroup.displayName)" # optional (free format text) 
+                TargetIdentifier  = "$($exchangeOnlineGroup.Identity)" # optional (free format text) 
+            }
+            #send result back  
+            Write-Information -Tags "Audit" -MessageData $log
             # Clean up error variables
             Remove-Variable 'verboseErrorMessage' -ErrorAction SilentlyContinue
             Remove-Variable 'auditErrorMessage' -ErrorAction SilentlyContinue
